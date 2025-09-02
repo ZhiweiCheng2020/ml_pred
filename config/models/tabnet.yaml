@@ -1,0 +1,62 @@
+# TabNet (Attentive Interpretable Tabular Learning) configuration
+
+model_name: "tabnet"
+model_type: "neural"
+
+# Whether to apply feature selection for this model
+apply_feature_selection: false  # TabNet has built-in attention-based selection
+
+# Model architecture parameters
+architecture:
+  n_d: 8  # Width of the decision prediction layer
+  n_a: 8  # Width of the attention embedding for each mask
+  n_steps: 3  # Number of successive steps in the network
+  gamma: 1.3  # Coefficient for feature reusage in the masks
+  cat_idxs: []  # Indices of categorical columns (empty for all numerical)
+  cat_dims: []  # Cardinality of categorical columns
+  cat_emb_dim: 1  # Embedding dimension for categorical features
+  n_independent: 2  # Number of independent GLU layers
+  n_shared: 2  # Number of shared GLU layers
+  momentum: 0.02  # Momentum for batch normalization
+  mask_type: "sparsemax"  # Options: "sparsemax", "entmax"
+
+# Training parameters
+training:
+  batch_size: 1024
+  virtual_batch_size: 128
+  epochs: 200
+  learning_rate: 0.02
+  optimizer: "adam"
+  scheduler:
+    enabled: true
+    type: "cosine"  # Options: "cosine", "step", "reduce_on_plateau"
+    patience: 10
+    factor: 0.5
+  early_stopping:
+    enabled: true
+    patience: 30
+    min_delta: 0.0001
+  clip_value: 1.0  # Gradient clipping
+
+# Regularization
+regularization:
+  lambda_sparse: 0.001  # Coefficient for the sparse regularization
+  reg_weight: 1.0  # General regularization weight
+  reg_type: "all"  # Options: "all", "last"
+
+# Hyperparameter tuning
+hyperparameter_tuning:
+  enabled: true
+  method: "optuna"
+  n_trials: 25
+  cv_folds: 3
+  param_space:
+    n_d: [8, 64]
+    n_a: [8, 64]
+    n_steps: [3, 10]
+    gamma: [1.0, 2.0]
+    learning_rate: [0.001, 0.1]
+    batch_size: [256, 2048]
+    lambda_sparse: [0.0001, 0.01]
+    n_independent: [1, 5]
+    n_shared: [1, 5]

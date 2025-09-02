@@ -1,0 +1,44 @@
+# CatBoost Regression configuration
+
+model_name: "catboost"
+model_type: "tree"
+
+# Whether to apply feature selection for this model
+apply_feature_selection: false  # CatBoost handles high dimensions well
+
+# Model parameters
+parameters:
+  iterations: 1000
+  learning_rate: 0.03
+  depth: 6
+  l2_leaf_reg: 3.0
+  loss_function: "RMSE"
+  eval_metric: "RMSE"
+  random_strength: 1.0
+  bagging_temperature: 1.0
+  od_type: "Iter"  # Overfitting detector type
+  od_wait: 50  # Early stopping patience
+  random_seed: 42
+  verbose: false
+  thread_count: -1  # Use all available cores
+
+# Early stopping
+early_stopping:
+  enabled: true
+  rounds: 50
+  metric: "RMSE"
+
+# Hyperparameter tuning
+hyperparameter_tuning:
+  enabled: true
+  method: "optuna"
+  n_trials: 40
+  cv_folds: 5
+  scoring: "neg_mean_squared_error"
+  param_space:
+    iterations: [500, 2000]
+    depth: [4, 10]
+    learning_rate: [0.01, 0.3]
+    l2_leaf_reg: [1, 10]
+    random_strength: [0.5, 2.0]
+    bagging_temperature: [0.5, 2.0]

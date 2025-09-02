@@ -1,0 +1,65 @@
+# SAINT (Self-Attention and Intersample Attention Transformer) configuration
+
+model_name: "saint"
+model_type: "neural"
+
+# Whether to apply feature selection for this model
+apply_feature_selection: false  # SAINT uses self-attention for feature importance
+
+# Model architecture parameters
+architecture:
+  dim: 32  # Dimension of the model
+  depth: 6  # Number of transformer layers
+  heads: 8  # Number of attention heads
+  dim_head: 16  # Dimension of each attention head
+  attn_dropout: 0.1  # Dropout for attention
+  ff_dropout: 0.1  # Dropout for feed-forward
+  use_intersample_attention: true  # Enable intersample attention
+  intersample_batch_size: 32  # Batch size for intersample attention
+
+# Training parameters
+training:
+  batch_size: 64
+  epochs: 200
+  learning_rate: 0.001
+  optimizer: "adamw"
+  weight_decay: 0.01
+  warmup_epochs: 10
+  scheduler:
+    enabled: true
+    type: "cosine"
+    min_lr: 0.00001
+  early_stopping:
+    enabled: true
+    patience: 25
+    min_delta: 0.0001
+  gradient_accumulation_steps: 1
+  mixed_precision: false  # Enable for faster training with GPUs
+
+# Data augmentation (specific to SAINT)
+augmentation:
+  mixup: true
+  mixup_alpha: 0.2
+  cutmix: false
+  cutmix_alpha: 1.0
+
+# Regularization
+regularization:
+  label_smoothing: 0.1
+  dropout: 0.1
+
+# Hyperparameter tuning
+hyperparameter_tuning:
+  enabled: true
+  method: "optuna"
+  n_trials: 20
+  cv_folds: 3
+  param_space:
+    dim: [16, 64]
+    depth: [3, 12]
+    heads: [4, 16]
+    learning_rate: [0.0001, 0.01]
+    batch_size: [32, 256]
+    attn_dropout: [0.0, 0.3]
+    ff_dropout: [0.0, 0.3]
+    mixup_alpha: [0.0, 0.5]

@@ -1,0 +1,48 @@
+# XGBoost Regression configuration
+
+model_name: "xgboost"
+model_type: "tree"
+
+# Whether to apply feature selection for this model
+apply_feature_selection: false  # XGBoost handles high dimensions well
+
+# Model parameters
+parameters:
+  n_estimators: 100
+  max_depth: 6
+  learning_rate: 0.3
+  subsample: 0.8
+  colsample_bytree: 0.8
+  min_child_weight: 1
+  gamma: 0
+  reg_alpha: 0  # L1 regularization
+  reg_lambda: 1  # L2 regularization
+  objective: "reg:squarederror"
+  booster: "gbtree"  # Options: "gbtree", "gblinear", "dart"
+  n_jobs: -1
+  random_state: 42
+  verbosity: 0
+
+# Early stopping
+early_stopping:
+  enabled: true
+  rounds: 50
+  metric: "rmse"
+
+# Hyperparameter tuning
+hyperparameter_tuning:
+  enabled: true
+  method: "optuna"
+  n_trials: 50
+  cv_folds: 5
+  scoring: "neg_mean_squared_error"
+  param_space:
+    n_estimators: [50, 500]
+    max_depth: [3, 15]
+    learning_rate: [0.01, 0.5]
+    subsample: [0.6, 1.0]
+    colsample_bytree: [0.6, 1.0]
+    min_child_weight: [1, 10]
+    gamma: [0, 0.5]
+    reg_alpha: [0, 10]
+    reg_lambda: [0, 10]

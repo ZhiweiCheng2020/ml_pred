@@ -1,0 +1,62 @@
+# Ensemble Model configuration
+
+model_name: "ensemble"
+model_type: "ensemble"
+
+# Ensemble method
+method: "stacking"  # Options: "voting", "stacking", "blending"
+
+# Base models to include in ensemble
+base_models:
+  - "ridge"
+  - "elasticnet"
+  - "random_forest"
+  - "xgboost"
+  - "lightgbm"
+  - "catboost"
+  - "sparse_nn"
+  - "tabnet"
+  # - "saint"  # Uncomment if needed
+
+# Voting ensemble parameters
+voting:
+  weights: "auto"  # Options: "auto", "uniform", or list of weights
+  optimize_weights: true  # Use optimization to find best weights
+
+# Stacking ensemble parameters
+stacking:
+  meta_model: "ridge"  # Options: "ridge", "elasticnet", "xgboost", "linear"
+  use_probabilities: false  # For classification
+  cv_folds: 5
+  passthrough: false  # Include original features in meta-model
+  meta_model_params:
+    alpha: 1.0
+    fit_intercept: true
+
+# Blending ensemble parameters
+blending:
+  blend_size: 0.2  # Proportion of training data for blending
+  meta_model: "ridge"
+  meta_model_params:
+    alpha: 1.0
+
+# Model selection criteria
+model_selection:
+  metric: "validation_rmse"  # Metric to use for selecting models
+  top_k: 5  # Number of top models to include
+  diversity_threshold: 0.3  # Correlation threshold for model diversity
+  min_performance: 0.7  # Minimum R2 score to include model
+
+# Ensemble optimization
+optimization:
+  method: "bayesian"  # Options: "grid", "bayesian", "differential_evolution"
+  n_iter: 50
+  scoring: "neg_mean_squared_error"
+  cv_folds: 5
+
+# Advanced options
+advanced:
+  use_oof_predictions: true  # Use out-of-fold predictions for stacking
+  calibrate_predictions: false  # Calibration for probability predictions
+  ensemble_selection: true  # Greedy ensemble selection
+  max_ensemble_size: 10

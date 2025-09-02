@@ -1,0 +1,53 @@
+# LightGBM Regression configuration
+
+model_name: "lightgbm"
+model_type: "tree"
+
+# Whether to apply feature selection for this model
+apply_feature_selection: false  # LightGBM handles high dimensions well
+
+# Model parameters
+parameters:
+  boosting_type: "gbdt"  # Options: "gbdt", "dart", "goss"
+  num_leaves: 31
+  max_depth: -1
+  learning_rate: 0.05
+  n_estimators: 100
+  subsample_for_bin: 200000
+  objective: "regression"
+  min_split_gain: 0.0
+  min_child_weight: 1e-3
+  min_child_samples: 20
+  subsample: 1.0
+  subsample_freq: 0
+  colsample_bytree: 1.0
+  reg_alpha: 0.0  # L1 regularization
+  reg_lambda: 0.0  # L2 regularization
+  random_state: 42
+  n_jobs: -1
+  importance_type: "gain"  # Options: "gain", "split"
+  verbosity: -1
+
+# Early stopping
+early_stopping:
+  enabled: true
+  rounds: 50
+  metric: "rmse"
+
+# Hyperparameter tuning
+hyperparameter_tuning:
+  enabled: true
+  method: "optuna"
+  n_trials: 50
+  cv_folds: 5
+  scoring: "neg_mean_squared_error"
+  param_space:
+    num_leaves: [20, 100]
+    max_depth: [3, 15]
+    learning_rate: [0.01, 0.3]
+    n_estimators: [50, 500]
+    min_child_samples: [5, 50]
+    subsample: [0.6, 1.0]
+    colsample_bytree: [0.6, 1.0]
+    reg_alpha: [0, 10]
+    reg_lambda: [0, 10]

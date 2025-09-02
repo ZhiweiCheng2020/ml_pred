@@ -1,0 +1,67 @@
+# Sparse Neural Network with L1 Regularization configuration
+
+model_name: "sparse_nn"
+model_type: "neural"
+
+# Whether to apply feature selection for this model
+apply_feature_selection: true  # Can benefit from dimensionality reduction
+
+# Model architecture
+architecture:
+  input_dim: null  # Will be set dynamically based on features
+  hidden_layers:
+    - units: 256
+      activation: "relu"
+      dropout: 0.3
+      l1_regularization: 0.01
+    - units: 128
+      activation: "relu"
+      dropout: 0.2
+      l1_regularization: 0.01
+    - units: 64
+      activation: "relu"
+      dropout: 0.1
+      l1_regularization: 0.005
+  output_dim: 1
+  output_activation: "linear"
+
+# Training parameters
+training:
+  batch_size: 32
+  epochs: 200
+  learning_rate: 0.001
+  optimizer: "adam"  # Options: "adam", "sgd", "rmsprop"
+  loss: "mse"
+  early_stopping:
+    enabled: true
+    patience: 20
+    min_delta: 0.0001
+    restore_best_weights: true
+  reduce_lr:
+    enabled: true
+    patience: 10
+    factor: 0.5
+    min_lr: 0.00001
+  validation_split: 0.2
+
+# Regularization
+regularization:
+  l1: 0.01  # L1 regularization for sparsity
+  l2: 0.001  # L2 regularization
+  batch_norm: true
+  dropout_rate: 0.3
+
+# Hyperparameter tuning
+hyperparameter_tuning:
+  enabled: true
+  method: "optuna"
+  n_trials: 30
+  cv_folds: 3
+  param_space:
+    learning_rate: [0.0001, 0.01]
+    batch_size: [16, 128]
+    l1_regularization: [0.001, 0.1]
+    l2_regularization: [0.0001, 0.01]
+    dropout_rate: [0.1, 0.5]
+    n_layers: [2, 4]
+    n_units: [32, 512]

@@ -1,0 +1,30 @@
+# ElasticNet Regression configuration
+
+model_name: "elasticnet"
+model_type: "linear"
+
+# Whether to apply feature selection for this model
+apply_feature_selection: true
+
+# Model parameters
+parameters:
+  alpha: 1.0
+  l1_ratio: 0.5  # Balance between L1 and L2 regularization
+  fit_intercept: true
+  max_iter: 1000
+  tol: 0.0001
+  selection: "cyclic"  # Options: "cyclic", "random"
+  random_state: 42
+
+# Hyperparameter tuning
+hyperparameter_tuning:
+  enabled: true
+  method: "random_search"  # Options: "grid_search", "random_search", "optuna"
+  n_iter: 50  # For random search
+  cv_folds: 5
+  scoring: "neg_mean_squared_error"
+  param_distributions:
+    alpha: [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
+    l1_ratio: [0.1, 0.3, 0.5, 0.7, 0.9, 0.95, 0.99]
+    fit_intercept: [true, false]
+    selection: ["cyclic", "random"]
