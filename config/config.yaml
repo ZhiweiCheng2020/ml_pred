@@ -42,16 +42,16 @@ evaluation:
 
 # Models to run
 models_to_run:
-  - "ridge"
-  - "elasticnet"
-  - "random_forest"
-  - "xgboost"
-  - "lightgbm"
-  - "catboost"
-  - "sparse_nn"
-  - "tabnet"
-  # - "saint"  # Uncomment if needed
-  # - "ensemble"  # Run after individual models
+  - "ridge"          # Baseline linear model
+  - "elasticnet"     # Regularized linear model
+  - "random_forest"  # Tree baseline
+  - "xgboost"        # Gradient boosting
+  - "lightgbm"       # Fast gradient boosting
+  - "catboost"       # Categorical boosting
+  - "sparse_nn"      # Neural network with L1
+  - "tabnet"         # Attention-based tabular
+  - "saint"          # Transformer for tabular
+  - "ensemble"       # Combine best models
 
 # Output configuration
 output:

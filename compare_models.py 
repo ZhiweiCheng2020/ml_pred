@@ -1,0 +1,305 @@
+"""
+Generate model comparison report
+"""
+
+import sys
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from pathlib import Path
+import argparse
+import logging
+
+# Add src to path
+sys.path.append('src')
+
+from src.utils import load_config, load_model_results, format_metric_name, calculate_improvement
+from src.visualization import Visualizer
+
+logger = logging.getLogger(__name__)
+
+
+def load_comparison_data(results_dir: str = "results") -> pd.DataFrame:
+    """
+    Load model comparison data
+
+    Args:
+        results_dir: Directory containing results
+
+    Returns:
+        DataFrame with model comparison
+    """
+    results_path = Path(results_dir)
+
+    # Try to load existing comparison file
+    comparison_file = results_path / "model_comparison.csv"
+    if comparison_file.exists():
+        logger.info(f"Loading comparison from {comparison_file}")
+        return pd.read_csv(comparison_file)
+
+    # Otherwise, try to find individual result files
+    logger.info("Comparison file not found. Looking for individual result files...")
+
+    model_files = list(results_path.glob("*_results.json"))
+    if not model_files:
+        raise FileNotFoundError(f"No result files found in {results_dir}")
+
+    # Load and combine results
+    all_results = {}
+    for file_path in model_files:
+        model_name = file_path.stem.replace("_results", "")
+        try:
+            results = load_model_results(str(file_path))
+            all_results[model_name] = results
+        except Exception as e:
+            logger.warning(f"Could not load {file_path}: {e}")
+
+    # Create comparison DataFrame
+    return create_comparison_dataframe(all_results)
+
+
+def create_comparison_dataframe(results: dict) -> pd.DataFrame:
+    """
+    Create comparison DataFrame from results dictionary
+
+    Args:
+        results: Dictionary of model results
+
+    Returns:
+        DataFrame with model comparison
+    """
+    comparison_data = []
+
+    for model_name, model_results in results.items():
+        if 'error' in model_results:
+            continue
+
+        row = {
+            'model': model_name,
+            'training_time': model_results.get('training_time', 0),
+            'n_features': model_results.get('n_features', 0)
+        }
+
+        # Add training metrics
+        train_metrics = model_results.get('train_metrics', {})
+        for metric_name, value in train_metrics.items():
+            row[f'train_{metric_name}'] = value
+
+        # Add validation metrics
+        val_metrics = model_results.get('val_metrics', {})
+        for metric_name, value in val_metrics.items():
+            row[f'val_{metric_name}'] = value
+
+        # Add test metrics if available
+        test_metrics = model_results.get('test_metrics', {})
+        for metric_name, value in test_metrics.items():
+            row[f'test_{metric_name}'] = value
+
+        comparison_data.append(row)
+
+    comparison_df = pd.DataFrame(comparison_data)
+
+    # Sort by validation RMSE if available, otherwise by training RMSE
+    sort_column = 'val_rmse' if 'val_rmse' in comparison_df.columns else 'train_rmse'
+    if sort_column in comparison_df.columns:
+        comparison_df = comparison_df.sort_values(sort_column, ascending=True)
+
+    return comparison_df
+
+
+def generate_detailed_report(comparison_df: pd.DataFrame,
+                           output_dir: str = "results") -> None:
+    """
+    Generate detailed comparison report
+
+    Args:
+        comparison_df: DataFrame with model comparison
+        output_dir: Output directory for report
+    """
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Create report
+    report_lines = []
+    report_lines.append("# Model Comparison Report\n")
+    report_lines.append(f"Generated on: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+    # Summary statistics
+    report_lines.append("## Summary Statistics\n")
+    report_lines.append(f"- Total models trained: {len(comparison_df)}\n")
+    report_lines.append(f"- Average training time: {comparison_df['training_time'].mean():.2f} seconds\n")
+    report_lines.append(f"- Feature range: {comparison_df['n_features'].min()}-{comparison_df['n_features'].max()}\n")
+
+    # Best models by metric
+    report_lines.append("## Best Models by Metric\n")
+
+    metrics = ['rmse', 'mae', 'r2', 'mape']
+    for metric in metrics:
+        test_col = f'test_{metric}'
+        val_col = f'val_{metric}'
+
+        # Use test metric if available, otherwise validation
+        metric_col = test_col if test_col in comparison_df.columns else val_col
+
+        if metric_col in comparison_df.columns:
+            if metric == 'r2':
+                best_idx = comparison_df[metric_col].idxmax()
+            else:
+                best_idx = comparison_df[metric_col].idxmin()
+
+            best_model = comparison_df.loc[best_idx, 'model']
+            best_score = comparison_df.loc[best_idx, metric_col]
+
+            report_lines.append(f"- **{format_metric_name(metric)}**: {best_model} ({best_score:.4f})\n")
+
+    # Detailed comparison table
+    report_lines.append("## Detailed Comparison\n")
+    report_lines.append("| Model | Training Time | Features | Train RMSE | Val RMSE | Test RMSE | R² |\n")
+    report_lines.append("|-------|---------------|----------|------------|----------|-----------|----|\n")
+
+    for _, row in comparison_df.iterrows():
+        model = row['model']
+        train_time = f"{row.get('training_time', 0):.2f}s"
+        n_features = int(row.get('n_features', 0))
+        train_rmse = f"{row.get('train_rmse', 0):.4f}"
+        val_rmse = f"{row.get('val_rmse', 0):.4f}" if 'val_rmse' in row else "N/A"
+        test_rmse = f"{row.get('test_rmse', 0):.4f}" if 'test_rmse' in row else "N/A"
+        r2 = f"{row.get('test_r2', row.get('val_r2', row.get('train_r2', 0))):.4f}"
+
+        report_lines.append(f"| {model} | {train_time} | {n_features} | {train_rmse} | {val_rmse} | {test_rmse} | {r2} |\n")
+
+    # Performance improvements
+    if len(comparison_df) > 1:
+        report_lines.append("## Performance Improvements\n")
+
+        baseline_idx = comparison_df.index[-1]  # Worst performing model
+        best_idx = comparison_df.index[0]       # Best performing model
+
+        baseline_model = comparison_df.loc[baseline_idx, 'model']
+        best_model = comparison_df.loc[best_idx, 'model']
+
+        if 'val_rmse' in comparison_df.columns:
+            baseline_rmse = comparison_df.loc[baseline_idx, 'val_rmse']
+            best_rmse = comparison_df.loc[best_idx, 'val_rmse']
+            improvement = calculate_improvement(baseline_rmse, best_rmse, 'rmse')
+
+            report_lines.append(f"- **Best improvement**: {best_model} vs {baseline_model}: {improvement:.1f}% improvement in RMSE\n")
+
+    # Save report
+    report_path = output_dir / "comparison_report.md"
+    with open(report_path, 'w') as f:
+        f.writelines(report_lines)
+
+    logger.info(f"Detailed report saved to {report_path}")
+
+
+def create_comparison_visualizations(comparison_df: pd.DataFrame,
+                                   config: dict,
+                                   output_dir: str = "results") -> None:
+    """
+    Create comparison visualizations
+
+    Args:
+        comparison_df: DataFrame with model comparison
+        config: Configuration dictionary
+        output_dir: Output directory
+    """
+    visualizer = Visualizer(config)
+
+    # Model comparison plot
+    visualizer.plot_model_comparison(comparison_df, 'rmse')
+
+    # Training time vs performance
+    if 'val_rmse' in comparison_df.columns and 'training_time' in comparison_df.columns:
+        plt.figure(figsize=(10, 6))
+
+        scatter = plt.scatter(comparison_df['training_time'],
+                            comparison_df['val_rmse'],
+                            s=100, alpha=0.7)
+
+        # Add model names as labels
+        for i, model in enumerate(comparison_df['model']):
+            plt.annotate(model,
+                        (comparison_df.iloc[i]['training_time'],
+                         comparison_df.iloc[i]['val_rmse']),
+                        xytext=(5, 5), textcoords='offset points',
+                        fontsize=9, alpha=0.8)
+
+        plt.xlabel('Training Time (seconds)')
+        plt.ylabel('Validation RMSE')
+        plt.title('Training Time vs Model Performance')
+        plt.grid(True, alpha=0.3)
+
+        # Save plot
+        plt.savefig(Path(output_dir) / 'plots' / 'time_vs_performance.png',
+                   dpi=100, bbox_inches='tight')
+        plt.show()
+
+    # Feature count vs performance
+    if 'val_rmse' in comparison_df.columns and 'n_features' in comparison_df.columns:
+        plt.figure(figsize=(10, 6))
+
+        scatter = plt.scatter(comparison_df['n_features'],
+                            comparison_df['val_rmse'],
+                            s=100, alpha=0.7)
+
+        # Add model names as labels
+        for i, model in enumerate(comparison_df['model']):
+            plt.annotate(model,
+                        (comparison_df.iloc[i]['n_features'],
+                         comparison_df.iloc[i]['val_rmse']),
+                        xytext=(5, 5), textcoords='offset points',
+                        fontsize=9, alpha=0.8)
+
+        plt.xlabel('Number of Features')
+        plt.ylabel('Validation RMSE')
+        plt.title('Feature Count vs Model Performance')
+        plt.grid(True, alpha=0.3)
+
+        # Save plot
+        plt.savefig(Path(output_dir) / 'plots' / 'features_vs_performance.png',
+                   dpi=100, bbox_inches='tight')
+        plt.show()
+
+
+def main():
+    """Main function for model comparison"""
+    parser = argparse.ArgumentParser(description="Generate model comparison report")
+    parser.add_argument("--results_dir", default="results",
+                       help="Directory containing results")
+    parser.add_argument("--config", default="config/config.yaml",
+                       help="Configuration file path")
+
+    args = parser.parse_args()
+
+    # Setup logging
+    logging.basicConfig(level=logging.INFO)
+
+    # Load configuration
+    config = load_config(args.config)
+
+    logger.info("Loading comparison data...")
+    comparison_df = load_comparison_data(args.results_dir)
+
+    logger.info(f"Loaded data for {len(comparison_df)} models")
+
+    # Print summary to console
+    print("\n" + "="*60)
+    print("MODEL COMPARISON SUMMARY")
+    print("="*60)
+    print(comparison_df.to_string(index=False, float_format='{:.4f}'.format))
+
+    # Generate detailed report
+    logger.info("Generating detailed report...")
+    generate_detailed_report(comparison_df, args.results_dir)
+
+    # Create visualizations
+    logger.info("Creating visualizations...")
+    create_comparison_visualizations(comparison_df, config, args.results_dir)
+
+    logger.info("Comparison report generated successfully!")
+
+
+if __name__ == "__main__":
+    main()
