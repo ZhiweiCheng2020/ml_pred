@@ -9,8 +9,64 @@ from typing import Dict, Any, Optional, Tuple
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline
+from sklearn.base import BaseEstimator, TransformerMixin
 
 logger = logging.getLogger(__name__)
+
+
+class LogTransformer(BaseEstimator, TransformerMixin):
+    """Custom transformer for log transformation with sklearn compatibility"""
+
+    def __init__(self, offset: float = 1.0):
+        """
+        Initialize LogTransformer
+
+        Args:
+            offset: Offset to add before log transformation
+        """
+        self.offset = offset
+        self.feature_names_in_ = None
+
+    def fit(self, X, y=None):
+        """Fit transformer (no-op for log transform)"""
+        # Store feature names if available
+        if hasattr(X, 'columns'):
+            self.feature_names_in_ = np.array(X.columns)
+        elif isinstance(X, np.ndarray):
+            n_features = X.shape[1] if len(X.shape) > 1 else 1
+            self.feature_names_in_ = np.array([f'feature_{i}' for i in range(n_features)])
+        return self
+
+    def transform(self, X):
+        """Apply log transformation"""
+        # Handle both DataFrame and array inputs
+        if isinstance(X, pd.DataFrame):
+            X_array = X.values
+        else:
+            X_array = X
+
+        # Apply log(1 + x) transformation to handle zero values
+        # For multiplicative features (returns), this is appropriate
+        return np.log1p(np.abs(X_array)) * np.sign(X_array)
+
+    def fit_transform(self, X, y=None):
+        """Fit and transform"""
+        return self.fit(X, y).transform(X)
+
+    def inverse_transform(self, X):
+        """Inverse log transformation"""
+        return np.sign(X) * (np.expm1(np.abs(X)))
+
+    def get_feature_names_out(self, input_features=None):
+        """Get output feature names for transformation"""
+        if input_features is not None:
+            return np.array([f"log_{name}" for name in input_features])
+        elif self.feature_names_in_ is not None:
+            return np.array([f"log_{name}" for name in self.feature_names_in_])
+        else:
+            # If no feature names available, return generic names
+            n_features = getattr(self, 'n_features_in_', 1)
+            return np.array([f"log_feature_{i}" for i in range(n_features)])
 
 
 class Preprocessor:
@@ -92,7 +148,8 @@ class Preprocessor:
             transformers=transformers,
             remainder='passthrough',
             sparse_threshold=0,
-            n_jobs=-1
+            n_jobs=-1,
+            verbose_feature_names_out=False  # Use shorter feature names
         )
 
         return preprocessor
@@ -172,16 +229,65 @@ class Preprocessor:
 
         feature_names = []
 
-        for name, transformer, features in self.preprocessor.transformers_:
-            if transformer == 'passthrough':
-                feature_names.extend(features)
+        # Try to use sklearn's get_feature_names_out if available
+        try:
+            if hasattr(self.preprocessor, 'get_feature_names_out'):
+                # This works for sklearn >= 1.0
+                feature_names = list(self.preprocessor.get_feature_names_out())
             else:
-                if hasattr(transformer, 'get_feature_names_out'):
-                    names = transformer.get_feature_names_out(features)
-                    feature_names.extend(names)
+                # Fallback for older sklearn versions
+                feature_names = self._get_feature_names_manual(input_features)
+        except Exception as e:
+            logger.warning(f"Could not get feature names automatically: {e}")
+            # Fallback: create generic names
+            feature_names = self._get_feature_names_manual(input_features)
+
+        return feature_names
+
+    def _get_feature_names_manual(self, input_features: list) -> list:
+        """Manually construct feature names when automatic extraction fails"""
+        if self.preprocessor is None:
+            return list(input_features)
+
+        feature_names = []
+
+        # Get the transformers
+        if hasattr(self.preprocessor, 'transformers_'):
+            for name, transformer, features in self.preprocessor.transformers_:
+                if transformer == 'passthrough':
+                    feature_names.extend(features)
+                elif transformer == 'drop':
+                    continue
                 else:
-                    # For pipelines or transformers without get_feature_names_out
-                    feature_names.extend([f"{name}_{f}" for f in features])
+                    # Handle different transformer types
+                    if isinstance(transformer, Pipeline):
+                        # For pipelines, use the step names
+                        prefix = name
+                        for feature in features:
+                            feature_names.append(f"{prefix}_{feature}")
+                    elif hasattr(transformer, 'get_feature_names_out'):
+                        try:
+                            names = transformer.get_feature_names_out(features)
+                            feature_names.extend(names)
+                        except:
+                            # If get_feature_names_out fails, use generic names
+                            for feature in features:
+                                feature_names.append(f"{name}_{feature}")
+                    else:
+                        # For transformers without get_feature_names_out
+                        for feature in features:
+                            feature_names.append(f"{name}_{feature}")
+
+        # Handle remainder columns
+        if hasattr(self.preprocessor, 'remainder') and self.preprocessor.remainder == 'passthrough':
+            # Add any remaining features that weren't explicitly transformed
+            all_transformed = set()
+            for _, _, features in self.preprocessor.transformers_:
+                if features != 'drop':
+                    all_transformed.update(features)
+
+            remainder_features = [f for f in input_features if f not in all_transformed]
+            feature_names.extend(remainder_features)
 
         return feature_names
 
@@ -198,38 +304,3 @@ class Preprocessor:
         if self.preprocessor is not None and hasattr(self.preprocessor, 'inverse_transform'):
             return self.preprocessor.inverse_transform(X)
         return X
-
-
-class LogTransformer:
-    """Custom transformer for log transformation"""
-
-    def __init__(self, offset: float = 1.0):
-        """
-        Initialize LogTransformer
-
-        Args:
-            offset: Offset to add before log transformation
-        """
-        self.offset = offset
-
-    def fit(self, X, y=None):
-        """Fit transformer (no-op for log transform)"""
-        return self
-
-    def transform(self, X):
-        """Apply log transformation"""
-        # Handle both DataFrame and array inputs
-        if isinstance(X, pd.DataFrame):
-            X = X.values
-
-        # Apply log(1 + x) transformation to handle zero values
-        # For multiplicative features (returns), this is appropriate
-        return np.log1p(np.abs(X)) * np.sign(X)
-
-    def fit_transform(self, X, y=None):
-        """Fit and transform"""
-        return self.fit(X, y).transform(X)
-
-    def inverse_transform(self, X):
-        """Inverse log transformation"""
-        return np.sign(X) * (np.expm1(np.abs(X)))
