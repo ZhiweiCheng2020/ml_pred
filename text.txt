@@ -1,0 +1,26 @@
+I am doing some ML analysis using tabular data, there are 20k data points, for each point, there are around 300 features, the features and target are all numerical.
+
+The data points are simulated from a portfolio. Basically simulate different market conditions and get the corresponding PnL (profit or loss). So the features are the value of the financial instruments and the target is the corresponding PnL (one single value for each point).
+
+The value of the financial instruments are either additive (with sign 0, for example swap rate) or multiplicative (with sign 1, for example, equity return), each instrument is simulated based on some sort of distribution.
+
+I’m using Python. Please guide me, on how to preprocess the data, and how to test different models (I.e. which models should I try and by which order)
+
+Now the features X and targets Y are read from two csv files and saved in  two pandas data frames: df_X, df_Y.
+
+As for the code, please make sure it adapts to different ML models and I can switch different models and training params using a .yaml file. For readability, you can save the code in separate scripts, you can directly return me a zip file than includes all the scripts for download. Please make sure the code is error free.
+
+Do not show code first, first show me the logic, detailed ideas or steps, after I confirm on these, then return me the corresponding code.
+
+
+I would like to specify following:
+Save the model err somewhere, such that I can easily compare them across models no need to detect outliers and filling NA
+In Model Progression, add Sparse neural networks with L1, TabNet and SAINT as choices, before ensemble learning.
+Add the choice of Evaluation Metric to config yaml file, and the default is RMSE
+Remove .ipynb and replace it by .py files, can save the plots in the .ipynb, if there is any. Use Smart PCA and tree methods as potential choices, but do not apply them for:
+1. XGBoost/LightGBM - They handle high dimensions well
+2. Random Forest - Built-in feature selection
+3. Initial baseline - Start with raw features
+
+Some more info to differentiate the additive and multiplicative features: there will be a python dictionary, the keys are the feature names (the columns of df_X), and the values are either “1” or “0”, “0” is additive, and “1” is multiplicative
+ Now please give me the modified ML pipeline
