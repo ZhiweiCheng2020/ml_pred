@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import warnings
 import pandas as pd
+import traceback
 
 warnings.filterwarnings('ignore')
 
@@ -59,7 +60,12 @@ def main(config_path: str = "config/config.yaml"):
     logger.info("LOADING DATA")
     logger.info("=" * 60)
 
-    X, y, feature_types = data_loader.load_data()
+    try:
+        X, y, feature_types = data_loader.load_data()
+    except Exception as e:
+        logger.error(f"Failed to load data: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
 
     # Print data summary
     data_summary = data_loader.get_data_summary()
@@ -104,17 +110,47 @@ def main(config_path: str = "config/config.yaml"):
         feature_names, feature_types
     )
 
+    # Check if any models were successfully trained
+    successful_models = {k: v for k, v in all_results.items() if 'error' not in v}
+
+    if not successful_models:
+        logger.error("=" * 60)
+        logger.error("CRITICAL ERROR: No models were successfully trained!")
+        logger.error("=" * 60)
+        logger.error("\nErrors encountered:")
+        for model_name, result in all_results.items():
+            if 'error' in result:
+                logger.error(f"  {model_name}: {result['error']}")
+
+        logger.error("\nPossible causes:")
+        logger.error("1. Missing model configuration files in config/models/")
+        logger.error("2. Missing or incompatible dependencies")
+        logger.error("3. Data format issues")
+        logger.error("\nPlease check the logs above for detailed error messages.")
+
+        # Still save what we have for debugging
+        partial_results = {
+            'comparison': pd.DataFrame(),
+            'model_results': all_results,
+            'test_results': {},
+            'best_model': None,
+            'config': config
+        }
+        save_results(partial_results, config.get('output', {}).get('results_dir', 'results'))
+        return partial_results
+
+    logger.info(f"\nSuccessfully trained {len(successful_models)} out of {len(all_results)} models")
+    if len(successful_models) < len(all_results):
+        failed_models = [k for k in all_results.keys() if 'error' in all_results[k]]
+        logger.warning(f"Failed models: {failed_models}")
+
     # Evaluate on test set
     logger.info("\n" + "=" * 60)
     logger.info("TEST SET EVALUATION")
     logger.info("=" * 60)
 
     test_results = {}
-    for model_name, model_results in all_results.items():
-        if 'error' in model_results:
-            logger.warning(f"Skipping {model_name} due to training error: {model_results['error']}")
-            continue
-
+    for model_name, model_results in successful_models.items():
         try:
             # Get the trained model
             model = trainer.trained_models[model_name]
@@ -159,54 +195,73 @@ def main(config_path: str = "config/config.yaml"):
 
         except Exception as e:
             logger.error(f"Error evaluating {model_name} on test set: {str(e)}")
+            logger.error(traceback.format_exc())
 
     # Create model comparison
     logger.info("\n" + "=" * 60)
     logger.info("CREATING COMPARISON")
     logger.info("=" * 60)
 
-    comparison_df = evaluator.evaluate_models(all_results)
-    logger.info("\nModel Comparison:")
-    logger.info(comparison_df.to_string(index=False))
+    # Only use successful models for comparison
+    comparison_df = evaluator.evaluate_models(successful_models)
 
-    # Save comparison
-    comparison_path = config.get('output', {}).get('comparison_file', 'results/model_comparison.csv')
-    comparison_df.to_csv(comparison_path, index=False)
-    logger.info(f"Model comparison saved to {comparison_path}")
+    if comparison_df.empty:
+        logger.warning("No models to compare - comparison DataFrame is empty")
+    else:
+        logger.info("\nModel Comparison:")
+        logger.info(comparison_df.to_string(index=False))
+
+        # Save comparison
+        comparison_path = config.get('output', {}).get('comparison_file', 'results/model_comparison.csv')
+        comparison_df.to_csv(comparison_path, index=False)
+        logger.info(f"Model comparison saved to {comparison_path}")
 
     # Visualizations
     logger.info("\n" + "=" * 60)
     logger.info("CREATING VISUALIZATIONS")
     logger.info("=" * 60)
 
-    # Model comparison plot
-    visualizer.plot_model_comparison(comparison_df, 'rmse')
+    try:
+        if not comparison_df.empty:
+            # Model comparison plot
+            visualizer.plot_model_comparison(comparison_df, 'rmse')
 
-    # Best model analysis
-    best_model_name = trainer.get_best_model('rmse', use_validation=True)
-    logger.info(f"Best model: {best_model_name}")
+        # Best model analysis - only if we have successful models
+        best_model_name = None
+        if successful_models:
+            try:
+                best_model_name = trainer.get_best_model('rmse', use_validation=True)
+                logger.info(f"Best model: {best_model_name}")
+            except ValueError as e:
+                logger.warning(f"Could not determine best model: {e}")
+                # Use the first successful model as fallback
+                best_model_name = list(successful_models.keys())[0]
+                logger.info(f"Using {best_model_name} for visualization")
 
-    if best_model_name and best_model_name in test_results:
-        best_test_results = test_results[best_model_name]
+        if best_model_name and best_model_name in test_results:
+            best_test_results = test_results[best_model_name]
 
-        # Predictions vs actual plot
-        visualizer.plot_predictions_vs_actual(
-            y_test_np, best_test_results['test_predictions'],
-            best_model_name, 'test'
-        )
+            # Predictions vs actual plot
+            visualizer.plot_predictions_vs_actual(
+                y_test_np, best_test_results['test_predictions'],
+                best_model_name, 'test'
+            )
 
-        # Residual distribution
-        visualizer.plot_residual_distribution(
-            y_test_np, best_test_results['test_predictions'],
-            best_model_name
-        )
-
-        # Feature importance for best model
-        if all_results[best_model_name].get('feature_importance') is not None:
-            visualizer.plot_feature_importance(
-                all_results[best_model_name]['feature_importance'],
+            # Residual distribution
+            visualizer.plot_residual_distribution(
+                y_test_np, best_test_results['test_predictions'],
                 best_model_name
             )
+
+            # Feature importance for best model
+            if successful_models[best_model_name].get('feature_importance') is not None:
+                visualizer.plot_feature_importance(
+                    successful_models[best_model_name]['feature_importance'],
+                    best_model_name
+                )
+    except Exception as e:
+        logger.error(f"Error creating visualizations: {str(e)}")
+        logger.error(traceback.format_exc())
 
     # Save all results
     logger.info("\n" + "=" * 60)
@@ -214,17 +269,22 @@ def main(config_path: str = "config/config.yaml"):
     logger.info("=" * 60)
 
     final_results = {
-        'comparison': comparison_df,
+        'comparison': comparison_df if not comparison_df.empty else pd.DataFrame(),
         'model_results': all_results,
         'test_results': test_results,
         'best_model': best_model_name,
-        'config': config
+        'config': config,
+        'successful_models': len(successful_models),
+        'total_models_attempted': len(all_results)
     }
 
     save_results(final_results, config.get('output', {}).get('results_dir', 'results'))
 
     logger.info("=" * 60)
-    logger.info("PIPELINE COMPLETED SUCCESSFULLY")
+    if successful_models:
+        logger.info(f"PIPELINE COMPLETED - {len(successful_models)} models trained successfully")
+    else:
+        logger.info("PIPELINE COMPLETED WITH ERRORS - No models trained successfully")
     logger.info("=" * 60)
 
     return final_results
@@ -237,4 +297,9 @@ if __name__ == "__main__":
 
     args = parser.parse_args()
 
-    results = main(args.config)
+    try:
+        results = main(args.config)
+    except Exception as e:
+        logger.error(f"Pipeline failed with error: {str(e)}")
+        logger.error(traceback.format_exc())
+        sys.exit(1)
