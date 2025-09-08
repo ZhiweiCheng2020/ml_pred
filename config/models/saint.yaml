@@ -8,45 +8,52 @@ apply_feature_selection: false  # SAINT uses self-attention for feature importan
 
 # Model architecture parameters
 architecture:
-  dim: 32  # Dimension of the model
+  dim: 32  # Dimension of the model (d_model)
   depth: 6  # Number of transformer layers
   heads: 8  # Number of attention heads
-  dim_head: 16  # Dimension of each attention head
-  attn_dropout: 0.1  # Dropout for attention
-  ff_dropout: 0.1  # Dropout for feed-forward
-  use_intersample_attention: true  # Enable intersample attention
-  intersample_batch_size: 32  # Batch size for intersample attention
+  dim_head: 16  # Dimension of each attention head (should be dim / heads)
+  attn_dropout: 0.1  # Dropout for attention layers
+  ff_dropout: 0.1  # Dropout for feed-forward layers
+  use_intersample_attention: true  # Enable intersample attention mechanism
+  d_ff_multiplier: 4  # Feed-forward dimension multiplier (d_ff = dim * d_ff_multiplier)
 
 # Training parameters
 training:
   batch_size: 64
   epochs: 200
   learning_rate: 0.001
-  optimizer: "adamw"
+  optimizer: "adamw"  # Options: "adam", "adamw", "sgd"
   weight_decay: 0.01
   warmup_epochs: 10
+  gradient_accumulation_steps: 1
+  mixed_precision: false  # Enable for faster training with GPUs
+
+  # Learning rate scheduler
   scheduler:
     enabled: true
-    type: "cosine"
+    type: "cosine"  # Options: "cosine", "reduce_on_plateau"
     min_lr: 0.00001
+    patience: 10  # For reduce_on_plateau
+    factor: 0.5   # For reduce_on_plateau
+
+  # Early stopping
   early_stopping:
     enabled: true
     patience: 25
     min_delta: 0.0001
-  gradient_accumulation_steps: 1
-  mixed_precision: false  # Enable for faster training with GPUs
+    monitor: "val_loss"  # Metric to monitor
 
 # Data augmentation (specific to SAINT)
 augmentation:
   mixup: true
-  mixup_alpha: 0.2
+  mixup_alpha: 0.2  # Controls the strength of mixup
   cutmix: false
   cutmix_alpha: 1.0
 
 # Regularization
 regularization:
-  label_smoothing: 0.1
-  dropout: 0.1
+  label_smoothing: 0.0  # Label smoothing factor
+  dropout: 0.1  # General dropout rate
 
 # Hyperparameter tuning
 hyperparameter_tuning:
@@ -54,6 +61,7 @@ hyperparameter_tuning:
   method: "optuna"
   n_trials: 20
   cv_folds: 3
+  scoring: "neg_mean_squared_error"
   param_space:
     dim: [16, 64]
     depth: [3, 12]
@@ -63,3 +71,27 @@ hyperparameter_tuning:
     attn_dropout: [0.0, 0.3]
     ff_dropout: [0.0, 0.3]
     mixup_alpha: [0.0, 0.5]
+    weight_decay: [0.001, 0.1]
+
+# Advanced configuration
+advanced:
+  # Gradient clipping
+  gradient_clipping:
+    enabled: true
+    max_norm: 1.0
+
+  # Intersample attention settings
+  intersample:
+    enabled: true
+    batch_sampling_strategy: "random"  # How to sample intersample data
+    attention_temperature: 1.0  # Temperature for attention softmax
+
+  # Model initialization
+  initialization:
+    method: "xavier_uniform"  # Options: "xavier_uniform", "kaiming_normal", "normal"
+    std: 0.02  # Standard deviation for normal initialization
+
+  # Memory optimization
+  memory:
+    checkpoint_activations: false  # Checkpoint activations to save memory
+    efficient_attention: false  # Use memory-efficient attention implementation
