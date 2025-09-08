@@ -64,7 +64,15 @@ class XGBoostModel(BaseModel):
 
     def build_model(self) -> xgb.XGBRegressor:
         """Build XGBoost model with current parameters"""
-        return xgb.XGBRegressor(**self.parameters)
+        # Remove early stopping parameters from model parameters as they should be passed to fit()
+        model_params = self.parameters.copy()
+
+        # These parameters should not be in the model constructor
+        fit_only_params = ['early_stopping_rounds', 'eval_metric']
+        for param in fit_only_params:
+            model_params.pop(param, None)
+
+        return xgb.XGBRegressor(**model_params)
 
     def fit(self, X: np.ndarray, y: np.ndarray,
             X_val: Optional[np.ndarray] = None,
@@ -80,23 +88,20 @@ class XGBoostModel(BaseModel):
         # Build model
         self.model = self.build_model()
 
-        # Prepare eval set for early stopping
-        eval_set = None
-        early_stopping_rounds = None
+        # Prepare fit parameters
+        fit_params = {}
 
+        # Add eval_set if validation data is provided
         if X_val is not None and y_val is not None:
-            eval_set = [(X_val, y_val)]
-            if self.config.get('early_stopping', {}).get('enabled', False):
-                early_stopping_rounds = self.config['early_stopping'].get('rounds', 50)
+            fit_params['eval_set'] = [(X_val, y_val)]
+            fit_params['verbose'] = False
+
+            # Add early stopping if enabled in config
+            early_stopping_config = self.config.get('early_stopping', {})
+            if early_stopping_config.get('enabled', False):
+                fit_params['early_stopping_rounds'] = early_stopping_config.get('rounds', 50)
 
         # Fit model
-        fit_params = {}
-        if eval_set is not None:
-            fit_params['eval_set'] = eval_set
-            fit_params['verbose'] = False
-        if early_stopping_rounds is not None:
-            fit_params['early_stopping_rounds'] = early_stopping_rounds
-
         self.model.fit(X, y, **fit_params)
 
         self.is_fitted = True
