@@ -1,11 +1,12 @@
 """
-Neural network models - Fixed dimension handling
+Neural network models - Fixed dimension handling with proper SAINT implementation
 """
 
 import numpy as np
 import logging
 from typing import Dict, Any, Optional
 import warnings
+import math
 
 warnings.filterwarnings('ignore')
 
@@ -17,6 +18,7 @@ from tensorflow.keras import layers, models, callbacks, regularizers, optimizers
 # PyTorch imports for TabNet and SAINT
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from pytorch_tabnet.tab_model import TabNetRegressor
 
 from .base_model import BaseModel
@@ -284,66 +286,141 @@ class TabNetModel(BaseModel):
         return y
 
 
-class SAINTModel(BaseModel):
-    """SAINT model (using TabNet as fallback with enhanced configuration)"""
+class MultiHeadAttention(nn.Module):
+    """Multi-head attention mechanism"""
 
-    def __init__(self, config: Dict[str, Any]):
-        """Initialize SAINT model"""
-        super().__init__(config)
-        self.model_name = 'saint'
-        logger.info("SAINT model using TabNet implementation as fallback.")
+    def __init__(self, d_model: int, num_heads: int, dropout: float = 0.1):
+        super().__init__()
+        assert d_model % num_heads == 0
 
-        # Create enhanced TabNet configuration for SAINT
-        tabnet_config = config.copy()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
 
-        # SAINT-inspired parameters for TabNet
-        tabnet_config['architecture'] = {
-            'n_d': config.get('architecture', {}).get('dim', 32),
-            'n_a': config.get('architecture', {}).get('dim', 32),
-            'n_steps': config.get('architecture', {}).get('depth', 6),
-            'gamma': 1.5,  # Higher gamma for more attention-like behavior
-            'n_independent': 3,
-            'n_shared': 2,
-            'momentum': 0.01,
-            'mask_type': 'sparsemax'
-        }
+        self.W_q = nn.Linear(d_model, d_model)
+        self.W_k = nn.Linear(d_model, d_model)
+        self.W_v = nn.Linear(d_model, d_model)
+        self.W_o = nn.Linear(d_model, d_model)
 
-        tabnet_config['training'] = {
-            'batch_size': config.get('training', {}).get('batch_size', 64),
-            'epochs': config.get('training', {}).get('epochs', 200),
-            'learning_rate': config.get('training', {}).get('learning_rate', 0.001),
-            'virtual_batch_size': 32,
-            'early_stopping': {
-                'patience': config.get('training', {}).get('early_stopping', {}).get('patience', 25)
-            }
-        }
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(d_model)
 
-        tabnet_config['regularization'] = {
-            'lambda_sparse': 0.01  # Higher sparsity for attention-like selection
-        }
+    def forward(self, query, key, value, mask=None):
+        batch_size = query.size(0)
 
-        self.fallback_model = TabNetModel(tabnet_config)
+        # Linear transformations and split into heads
+        Q = self.W_q(query).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        K = self.W_k(key).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
+        V = self.W_v(value).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
 
-    def build_model(self):
-        """Build SAINT model (using TabNet)"""
-        return self.fallback_model.build_model()
+        # Attention
+        attn_output = self.scaled_dot_product_attention(Q, K, V, mask)
 
-    def fit(self, X: np.ndarray, y: np.ndarray,
-            X_val: Optional[np.ndarray] = None,
-            y_val: Optional[np.ndarray] = None) -> 'SAINTModel':
-        """Fit SAINT model"""
-        logger.info(f"Training {self.model_name} model (using enhanced TabNet)...")
+        # Concatenate heads
+        attn_output = attn_output.transpose(1, 2).contiguous().view(
+            batch_size, -1, self.d_model
+        )
 
-        self.fallback_model.fit(X, y, X_val, y_val)
-        self.model = self.fallback_model.model
-        self.is_fitted = True
+        # Final linear layer
+        output = self.W_o(attn_output)
 
-        return self
+        # Residual connection and layer norm
+        return self.layer_norm(output + query)
 
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Make predictions"""
-        return self.fallback_model.predict(X)
+    def scaled_dot_product_attention(self, Q, K, V, mask=None):
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.d_k ** 0.5)
 
-    def get_feature_importance(self, feature_names: Optional[list] = None):
-        """Get feature importance from TabNet"""
-        return self.fallback_model.get_feature_importance(feature_names)
+        if mask is not None:
+            scores = scores.masked_fill(mask == 0, -1e9)
+
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        return torch.matmul(attn_weights, V)
+
+
+class IntersampleAttention(nn.Module):
+    """Intersample attention mechanism for SAINT"""
+
+    def __init__(self, d_model: int, num_heads: int, dropout: float = 0.1):
+        super().__init__()
+        self.attention = MultiHeadAttention(d_model, num_heads, dropout)
+
+    def forward(self, x, intersample_x):
+        """
+        Args:
+            x: Current sample embeddings [batch_size, seq_len, d_model]
+            intersample_x: Other samples for intersample attention [batch_size, seq_len, d_model]
+        """
+        return self.attention(x, intersample_x, intersample_x)
+
+
+class FeedForward(nn.Module):
+    """Feed-forward network"""
+
+    def __init__(self, d_model: int, d_ff: int, dropout: float = 0.1):
+        super().__init__()
+        self.linear1 = nn.Linear(d_model, d_ff)
+        self.linear2 = nn.Linear(d_ff, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.layer_norm = nn.LayerNorm(d_model)
+
+    def forward(self, x):
+        residual = x
+        x = F.relu(self.linear1(x))
+        x = self.dropout(x)
+        x = self.linear2(x)
+        return self.layer_norm(x + residual)
+
+
+class SAINTTransformerBlock(nn.Module):
+    """SAINT Transformer block with self-attention and intersample attention"""
+
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, dropout: float = 0.1,
+                 use_intersample: bool = True):
+        super().__init__()
+        self.use_intersample = use_intersample
+
+        # Self-attention
+        self.self_attention = MultiHeadAttention(d_model, num_heads, dropout)
+
+        # Intersample attention (if enabled)
+        if use_intersample:
+            self.intersample_attention = IntersampleAttention(d_model, num_heads, dropout)
+
+        # Feed-forward
+        self.feed_forward = FeedForward(d_model, d_ff, dropout)
+
+    def forward(self, x, intersample_x=None):
+        # Self-attention
+        x = self.self_attention(x, x, x)
+
+        # Intersample attention
+        if self.use_intersample and intersample_x is not None:
+            x = self.intersample_attention(x, intersample_x)
+
+        # Feed-forward
+        x = self.feed_forward(x)
+
+        return x
+
+
+class SAINTCore(nn.Module):
+    """Core SAINT model architecture"""
+
+    def __init__(self,
+                 input_dim: int,
+                 d_model: int = 32,
+                 num_heads: int = 8,
+                 num_layers: int = 6,
+                 d_ff: int = None,
+                 dropout: float = 0.1,
+                 use_intersample: bool = True,
+                 output_dim: int = 1):
+        super().__init__()
+
+        self.d_model = d_model
+        self.use_intersample = use_intersample
+
+        if d_ff is None:
+            d_ff = d_model * 4
