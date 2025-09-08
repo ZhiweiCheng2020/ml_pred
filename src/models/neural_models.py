@@ -1,5 +1,5 @@
 """
-Neural network models with GPU support
+Neural network models
 """
 
 import numpy as np
@@ -11,12 +11,12 @@ import os
 
 warnings.filterwarnings('ignore')
 
-# TensorFlow imports
+# TensorFlow imports (2.15+)
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras import layers, models, callbacks, regularizers, optimizers
 
-# PyTorch imports for TabNet and SAINT
+# PyTorch imports for TabNet and SAINT (2.1+)
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 
 def setup_gpu_tensorflow(config: Dict[str, Any]) -> None:
-    """Setup GPU for TensorFlow"""
+    """Setup GPU for TensorFlow 2.15+"""
     gpu_enabled = config.get('resources', {}).get('gpu_enabled', False)
 
     if gpu_enabled:
@@ -41,9 +41,11 @@ def setup_gpu_tensorflow(config: Dict[str, Any]) -> None:
                     tf.config.experimental.set_memory_growth(gpu, True)
                 logger.info(f"TensorFlow GPU enabled: {len(gpus)} GPU(s) available")
 
-                # Set mixed precision for better performance
-                policy = tf.keras.mixed_precision.Policy('mixed_float16')
-                tf.keras.mixed_precision.set_global_policy(policy)
+                # Mixed precision for TF 2.15+
+                # Use legacy keras for compatibility
+                from tensorflow.keras import mixed_precision
+                policy = mixed_precision.Policy('mixed_float16')
+                mixed_precision.set_global_policy(policy)
                 logger.info("Mixed precision training enabled for TensorFlow")
             except RuntimeError as e:
                 logger.error(f"GPU setup error: {e}")
@@ -56,7 +58,7 @@ def setup_gpu_tensorflow(config: Dict[str, Any]) -> None:
 
 
 def setup_gpu_pytorch(config: Dict[str, Any]) -> torch.device:
-    """Setup GPU for PyTorch and return device"""
+    """Setup GPU for PyTorch 2.1+"""
     gpu_enabled = config.get('resources', {}).get('gpu_enabled', False)
 
     if gpu_enabled and torch.cuda.is_available():
@@ -67,8 +69,11 @@ def setup_gpu_pytorch(config: Dict[str, Any]) -> torch.device:
         # Enable cudnn benchmarking for better performance
         torch.backends.cudnn.benchmark = True
 
-        # Set default tensor type to CUDA
-        torch.set_default_tensor_type('torch.cuda.FloatTensor')
+        # For PyTorch 2.1+, use the new default tensor type setting
+        if hasattr(torch, 'set_default_device'):
+            torch.set_default_device('cuda')
+        else:
+            torch.set_default_tensor_type('torch.cuda.FloatTensor')
     else:
         device = torch.device('cpu')
         if gpu_enabled:
@@ -80,7 +85,7 @@ def setup_gpu_pytorch(config: Dict[str, Any]) -> torch.device:
 
 
 class SparseNNModel(BaseModel):
-    """Sparse Neural Network with L1 regularization and GPU support"""
+    """Sparse Neural Network with L1 regularization - TF 2.15+ compatible"""
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize Sparse NN model"""
@@ -98,14 +103,15 @@ class SparseNNModel(BaseModel):
         if input_dim is None:
             input_dim = self.architecture.get('input_dim', 100)
 
-        # Use mixed precision if GPU is available
+        # Check if GPU is available
         gpu_enabled = self.config.get('resources', {}).get('gpu_enabled', False)
+        gpu_available = len(tf.config.list_physical_devices('GPU')) > 0
 
         # Build model
         model = models.Sequential()
 
         # Input layer
-        model.add(layers.InputLayer(input_shape=(input_dim,)))
+        model.add(layers.Input(shape=(input_dim,)))
 
         # Hidden layers with L1 regularization
         hidden_layers_config = self.architecture.get('hidden_layers', [])
@@ -119,10 +125,10 @@ class SparseNNModel(BaseModel):
             model.add(layers.Dense(
                 units,
                 activation=activation,
-                kernel_regularizer=regularizers.l1(l1_reg)
+                kernel_regularizer=regularizers.L1(l1_reg)  # Updated for latest TF
             ))
 
-            # Batch normalization (important for mixed precision)
+            # Batch normalization
             if self.regularization.get('batch_norm', True):
                 model.add(layers.BatchNormalization())
 
@@ -135,12 +141,12 @@ class SparseNNModel(BaseModel):
         output_activation = self.architecture.get('output_activation', 'linear')
 
         # For mixed precision, ensure output is float32
-        if gpu_enabled and tf.config.list_physical_devices('GPU'):
+        if gpu_enabled and gpu_available:
             model.add(layers.Dense(output_dim, activation=output_activation, dtype='float32'))
         else:
             model.add(layers.Dense(output_dim, activation=output_activation))
 
-        # Compile model
+        # Compile model with updated optimizer syntax
         learning_rate = self.training_params.get('learning_rate', 0.001)
         optimizer_type = self.training_params.get('optimizer', 'adam')
 
@@ -151,9 +157,10 @@ class SparseNNModel(BaseModel):
         else:
             optimizer = optimizers.RMSprop(learning_rate=learning_rate)
 
-        # Wrap optimizer for mixed precision if GPU is enabled
-        if gpu_enabled and tf.config.list_physical_devices('GPU'):
-            optimizer = tf.keras.mixed_precision.LossScaleOptimizer(optimizer)
+        # For mixed precision with TF 2.15+
+        if gpu_enabled and gpu_available:
+            from tensorflow.keras import mixed_precision
+            optimizer = mixed_precision.LossScaleOptimizer(optimizer)
 
         loss = self.training_params.get('loss', 'mse')
         model.compile(optimizer=optimizer, loss=loss, metrics=['mae'])
@@ -171,7 +178,7 @@ class SparseNNModel(BaseModel):
         if gpu_available:
             logger.info(f"Training on GPU: {tf.config.list_physical_devices('GPU')}")
 
-        # Ensure y is properly shaped (1D for regression)
+        # Ensure y is properly shaped
         y = self._ensure_1d_target(y)
         if y_val is not None:
             y_val = self._ensure_1d_target(y_val)
@@ -180,7 +187,7 @@ class SparseNNModel(BaseModel):
         input_dim = X.shape[1]
         self.model = self.build_model(input_dim)
 
-        # Prepare callbacks
+        # Prepare callbacks with updated syntax for TF 2.15+
         callbacks_list = []
 
         # Early stopping
@@ -190,7 +197,8 @@ class SparseNNModel(BaseModel):
                 monitor='val_loss' if X_val is not None else 'loss',
                 patience=early_stopping_config.get('patience', 20),
                 min_delta=early_stopping_config.get('min_delta', 0.0001),
-                restore_best_weights=early_stopping_config.get('restore_best_weights', True)
+                restore_best_weights=early_stopping_config.get('restore_best_weights', True),
+                start_from_epoch=0  # New parameter in recent versions
             ))
 
         # Reduce learning rate
@@ -211,21 +219,22 @@ class SparseNNModel(BaseModel):
         # Train model with optimized batch size for GPU
         batch_size = self.training_params.get('batch_size', 32)
         if gpu_available:
-            # Increase batch size for GPU efficiency
             batch_size = max(batch_size, 256)
 
         epochs = self.training_params.get('epochs', 200)
         validation_split = self.training_params.get('validation_split', 0.2) if validation_data is None else 0.0
 
-        # Use tf.data for better performance with GPU
+        # Use tf.data for better performance (TF 2.15+ optimizations)
         if gpu_available and len(X) > 10000:
-            # Create tf.data dataset for better GPU utilization
             train_dataset = tf.data.Dataset.from_tensor_slices((X, y))
-            train_dataset = train_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+            train_dataset = train_dataset.batch(batch_size)
+            train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
+            train_dataset = train_dataset.cache()  # Cache for better performance
 
             if validation_data:
                 val_dataset = tf.data.Dataset.from_tensor_slices(validation_data)
-                val_dataset = val_dataset.batch(batch_size).prefetch(tf.data.AUTOTUNE)
+                val_dataset = val_dataset.batch(batch_size)
+                val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
                 validation_data = val_dataset
 
             self.model.fit(
@@ -236,7 +245,6 @@ class SparseNNModel(BaseModel):
                 verbose=0
             )
         else:
-            # Standard fit for CPU or small datasets
             self.model.fit(
                 X, y,
                 batch_size=batch_size,
@@ -257,7 +265,6 @@ class SparseNNModel(BaseModel):
         if not self.is_fitted:
             raise ValueError("Model not fitted. Call fit() first.")
 
-        # Use larger batch size for GPU prediction
         gpu_available = len(tf.config.list_physical_devices('GPU')) > 0
         batch_size = 1024 if gpu_available else 32
 
@@ -276,7 +283,7 @@ class SparseNNModel(BaseModel):
 
 
 class TabNetModel(BaseModel):
-    """TabNet model with GPU support"""
+    """TabNet model with GPU support - Compatible with pytorch-tabnet 4.1+"""
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize TabNet model"""
@@ -291,7 +298,7 @@ class TabNetModel(BaseModel):
 
     def build_model(self) -> TabNetRegressor:
         """Build TabNet model with GPU support"""
-        # Extract parameters
+        # Extract parameters - updated for pytorch-tabnet 4.1+
         params = {
             'n_d': self.architecture.get('n_d', 8),
             'n_a': self.architecture.get('n_a', 8),
@@ -323,7 +330,7 @@ class TabNetModel(BaseModel):
         # Build model
         self.model = self.build_model()
 
-        # Prepare training parameters
+        # Prepare training parameters - updated for pytorch-tabnet 4.1+
         max_epochs = self.training_params.get('epochs', 200)
         batch_size = self.training_params.get('batch_size', 1024)
 
@@ -334,33 +341,33 @@ class TabNetModel(BaseModel):
         virtual_batch_size = self.training_params.get('virtual_batch_size', 128)
         patience = self.training_params.get('early_stopping', {}).get('patience', 30)
 
-        # Prepare eval set
-        eval_set = None
-        if X_val is not None and y_val is not None:
-            eval_set = [(X_val, y_val)]
-
         # Ensure targets are 2D for TabNet
         y_train_2d = self._ensure_2d_target(y)
-        y_val_2d = None
-        if y_val is not None:
+
+        # Prepare eval set
+        eval_set = []
+        if X_val is not None and y_val is not None:
             y_val_2d = self._ensure_2d_target(y_val)
             eval_set = [(X_val, y_val_2d)]
 
-        # Train model
+        # Train model with updated parameters for pytorch-tabnet 4.1+
         try:
             self.model.fit(
                 X, y_train_2d,
-                eval_set=eval_set,
+                eval_set=eval_set if eval_set else None,
                 max_epochs=max_epochs,
                 batch_size=batch_size,
                 virtual_batch_size=virtual_batch_size,
                 patience=patience,
-                eval_metric=['rmse']
+                eval_metric=['rmse'],
+                drop_last=False,  # New parameter in recent versions
+                augmentations=None  # Explicitly set to None
             )
         except Exception as e:
             logger.error(f"TabNet training failed: {e}")
-            # Try with simpler parameters
             logger.info("Retrying with simpler TabNet configuration...")
+
+            # Fallback configuration
             self.model = TabNetRegressor(
                 n_d=8, n_a=8, n_steps=3, gamma=1.3,
                 optimizer_fn=torch.optim.Adam,
@@ -370,7 +377,7 @@ class TabNetModel(BaseModel):
             )
             self.model.fit(
                 X, y_train_2d,
-                eval_set=eval_set,
+                eval_set=eval_set if eval_set else None,
                 max_epochs=min(100, max_epochs),
                 batch_size=min(512, batch_size),
                 virtual_batch_size=min(64, virtual_batch_size),
@@ -397,9 +404,9 @@ class TabNetModel(BaseModel):
         return y
 
 
-# SAINT Model components with GPU support
+# SAINT Model components with GPU support for PyTorch 2.1+
 class MultiHeadAttention(nn.Module):
-    """Multi-head attention mechanism with GPU optimization"""
+    """Multi-head attention mechanism with PyTorch 2.1+ optimizations"""
 
     def __init__(self, d_model: int, num_heads: int, dropout: float = 0.1):
         super().__init__()
@@ -425,13 +432,18 @@ class MultiHeadAttention(nn.Module):
         K = self.W_k(key).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
         V = self.W_v(value).view(batch_size, -1, self.num_heads, self.d_k).transpose(1, 2)
 
-        # Attention with flash attention if available (PyTorch 2.0+)
-        if hasattr(F, 'scaled_dot_product_attention'):
+        # Use PyTorch 2.0+ scaled_dot_product_attention for better performance
+        with torch.backends.cuda.sdp_kernel(
+            enable_flash=True,  # Enable Flash Attention
+            enable_math=True,
+            enable_mem_efficient=True
+        ):
             attn_output = F.scaled_dot_product_attention(
-                Q, K, V, attn_mask=mask, dropout_p=self.dropout.p if self.training else 0.0
+                Q, K, V,
+                attn_mask=mask,
+                dropout_p=self.dropout.p if self.training else 0.0,
+                is_causal=False
             )
-        else:
-            attn_output = self.scaled_dot_product_attention(Q, K, V, mask)
 
         # Concatenate heads
         attn_output = attn_output.transpose(1, 2).contiguous().view(
@@ -444,20 +456,9 @@ class MultiHeadAttention(nn.Module):
         # Residual connection and layer norm
         return self.layer_norm(output + query)
 
-    def scaled_dot_product_attention(self, Q, K, V, mask=None):
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.d_k ** 0.5)
-
-        if mask is not None:
-            scores = scores.masked_fill(mask == 0, -1e9)
-
-        attn_weights = F.softmax(scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-
-        return torch.matmul(attn_weights, V)
-
 
 class SAINTModel(BaseModel):
-    """SAINT model with GPU support"""
+    """SAINT model with GPU support - PyTorch 2.1+ compatible"""
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize SAINT model"""
@@ -470,10 +471,8 @@ class SAINTModel(BaseModel):
         self.device = setup_gpu_pytorch(config)
 
     def build_model(self, input_dim: int) -> nn.Module:
-        """Build SAINT model"""
-        # Note: Full SAINT implementation would go here
-        # This is a simplified version for demonstration
-        logger.warning("SAINT model requires full implementation - using placeholder")
+        """Build SAINT model - simplified version"""
+        logger.warning("SAINT model using simplified implementation")
 
         class SimpleSAINT(nn.Module):
             def __init__(self, input_dim, hidden_dim=64, output_dim=1):
@@ -482,11 +481,13 @@ class SAINTModel(BaseModel):
                 self.fc2 = nn.Linear(hidden_dim, hidden_dim)
                 self.fc3 = nn.Linear(hidden_dim, output_dim)
                 self.dropout = nn.Dropout(0.1)
+                self.norm1 = nn.LayerNorm(hidden_dim)
+                self.norm2 = nn.LayerNorm(hidden_dim)
 
             def forward(self, x):
-                x = F.relu(self.fc1(x))
+                x = F.relu(self.norm1(self.fc1(x)))
                 x = self.dropout(x)
-                x = F.relu(self.fc2(x))
+                x = F.relu(self.norm2(self.fc2(x)))
                 x = self.dropout(x)
                 return self.fc3(x)
 
@@ -508,7 +509,7 @@ class SAINTModel(BaseModel):
         input_dim = X.shape[1]
         self.model = self.build_model(input_dim)
 
-        # Convert to tensors and move to device
+        # Convert to tensors with proper dtype
         X_tensor = torch.FloatTensor(X).to(self.device)
         y_tensor = torch.FloatTensor(y).to(self.device)
 
@@ -516,22 +517,27 @@ class SAINTModel(BaseModel):
             X_val_tensor = torch.FloatTensor(X_val).to(self.device)
             y_val_tensor = torch.FloatTensor(y_val).to(self.device)
 
-        # Setup optimizer
+        # Setup optimizer with PyTorch 2.1+ features
         learning_rate = self.training_params.get('learning_rate', 0.001)
         optimizer = torch.optim.AdamW(
             self.model.parameters(),
             lr=learning_rate,
-            weight_decay=self.training_params.get('weight_decay', 0.01)
+            weight_decay=self.training_params.get('weight_decay', 0.01),
+            fused=True if self.device.type == 'cuda' else False  # Fused optimizer for GPU
         )
+
+        # Enable torch.compile for PyTorch 2.0+ (optional, can improve performance)
+        if hasattr(torch, 'compile') and self.device.type == 'cuda':
+            self.model = torch.compile(self.model, mode="reduce-overhead")
 
         # Training parameters
         batch_size = self.training_params.get('batch_size', 256)
         if self.device.type == 'cuda':
-            batch_size = max(batch_size, 512)  # Increase for GPU
+            batch_size = max(batch_size, 512)
 
         epochs = self.training_params.get('epochs', 150)
 
-        # Simple training loop (full implementation would use DataLoader)
+        # Simple training loop
         self.model.train()
         for epoch in range(epochs):
             # Forward pass
@@ -539,8 +545,12 @@ class SAINTModel(BaseModel):
             loss = F.mse_loss(outputs.squeeze(), y_tensor)
 
             # Backward pass
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
             loss.backward()
+
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
             optimizer.step()
 
             if epoch % 10 == 0:
