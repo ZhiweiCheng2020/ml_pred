@@ -4,21 +4,22 @@ model_name: "xgboost"
 model_type: "tree"
 
 # Whether to apply feature selection for this model
-apply_feature_selection: false  # XGBoost handles high dimensions well
+apply_feature_selection: false
 
 # Model parameters
 parameters:
-  n_estimators: 100
-  max_depth: 6
-  learning_rate: 0.3
+  n_estimators: 500  # More trees with early stopping
+  max_depth: 8  # Deeper for complex patterns
+  learning_rate: 0.05  # Lower for stability
   subsample: 0.8
   colsample_bytree: 0.8
-  min_child_weight: 1
-  gamma: 0
-  reg_alpha: 0  # L1 regularization
-  reg_lambda: 1  # L2 regularization
+  min_child_weight: 100  # Higher for 200k samples
+  gamma: 0.1  # Some regularization
+  reg_alpha: 0.1  # L1 regularization
+  reg_lambda: 1.0  # L2 regularization
   objective: "reg:squarederror"
-  booster: "gbtree"  # Options: "gbtree", "gblinear", "dart"
+  booster: "gbtree"
+  tree_method: "hist"  # Faster for large datasets
   n_jobs: -1
   random_state: 42
   verbosity: 0
@@ -26,23 +27,23 @@ parameters:
 # Early stopping
 early_stopping:
   enabled: true
-  rounds: 50
+  rounds: 100
   metric: "rmse"
 
 # Hyperparameter tuning
 hyperparameter_tuning:
   enabled: true
   method: "optuna"
-  n_trials: 50
-  cv_folds: 5
+  n_trials: 60  # More trials for important model
+  cv_folds: 3
   scoring: "neg_mean_squared_error"
   param_space:
-    n_estimators: [50, 500]
-    max_depth: [3, 15]
-    learning_rate: [0.01, 0.5]
-    subsample: [0.6, 1.0]
-    colsample_bytree: [0.6, 1.0]
-    min_child_weight: [1, 10]
-    gamma: [0, 0.5]
-    reg_alpha: [0, 10]
-    reg_lambda: [0, 10]
+    n_estimators: [300, 1000]
+    max_depth: [5, 12]
+    learning_rate: [0.01, 0.1]
+    subsample: [0.7, 0.9]
+    colsample_bytree: [0.7, 0.9]
+    min_child_weight: [50, 200]
+    gamma: [0, 0.3]
+    reg_alpha: [0, 1.0]
+    reg_lambda: [0.5, 3.0]

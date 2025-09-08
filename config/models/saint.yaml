@@ -8,70 +8,68 @@ apply_feature_selection: false  # SAINT uses self-attention for feature importan
 
 # Model architecture parameters
 architecture:
-  dim: 32  # Dimension of the model (d_model)
-  depth: 6  # Number of transformer layers
+  dim: 64  # Dimension of the model (d_model) - increased for capacity
+  depth: 4  # Number of transformer layers - reduced for efficiency
   heads: 8  # Number of attention heads
-  dim_head: 16  # Dimension of each attention head (should be dim / heads)
+  dim_head: 8  # Dimension of each attention head (dim / heads)
   attn_dropout: 0.1  # Dropout for attention layers
   ff_dropout: 0.1  # Dropout for feed-forward layers
-  use_intersample_attention: true  # Enable intersample attention mechanism
+  use_intersample_attention: false  # Disable for speed on large datasets
   d_ff_multiplier: 4  # Feed-forward dimension multiplier (d_ff = dim * d_ff_multiplier)
 
 # Training parameters
 training:
-  batch_size: 64
-  epochs: 200
+  batch_size: 256  # Larger batches for efficiency
+  epochs: 150  # Fewer epochs to reduce training time
   learning_rate: 0.001
   optimizer: "adamw"  # Options: "adam", "adamw", "sgd"
   weight_decay: 0.01
-  warmup_epochs: 10
+  warmup_epochs: 5  # Reduced warmup
   gradient_accumulation_steps: 1
-  mixed_precision: false  # Enable for faster training with GPUs
+  mixed_precision: true  # Enable for faster training with GPUs
 
   # Learning rate scheduler
   scheduler:
     enabled: true
     type: "cosine"  # Options: "cosine", "reduce_on_plateau"
     min_lr: 0.00001
-    patience: 10  # For reduce_on_plateau
+    patience: 15  # For reduce_on_plateau
     factor: 0.5   # For reduce_on_plateau
 
   # Early stopping
   early_stopping:
     enabled: true
-    patience: 25
-    min_delta: 0.0001
+    patience: 30
+    min_delta: 0.00001
     monitor: "val_loss"  # Metric to monitor
 
 # Data augmentation (specific to SAINT)
 augmentation:
-  mixup: true
+  mixup: false  # Disable for financial data
   mixup_alpha: 0.2  # Controls the strength of mixup
-  cutmix: false
+  cutmix: false  # Disable for financial data
   cutmix_alpha: 1.0
 
 # Regularization
 regularization:
-  label_smoothing: 0.0  # Label smoothing factor
+  label_smoothing: 0.0  # No label smoothing for regression
   dropout: 0.1  # General dropout rate
 
 # Hyperparameter tuning
 hyperparameter_tuning:
-  enabled: true
+  enabled: false  # Too expensive - set to true only if needed
   method: "optuna"
-  n_trials: 20
-  cv_folds: 3
+  n_trials: 10  # Few trials due to computational cost
+  cv_folds: 2
   scoring: "neg_mean_squared_error"
   param_space:
-    dim: [16, 64]
-    depth: [3, 12]
-    heads: [4, 16]
+    dim: [32, 128]
+    depth: [3, 6]
+    heads: [4, 8]
     learning_rate: [0.0001, 0.01]
-    batch_size: [32, 256]
-    attn_dropout: [0.0, 0.3]
-    ff_dropout: [0.0, 0.3]
-    mixup_alpha: [0.0, 0.5]
-    weight_decay: [0.001, 0.1]
+    batch_size: [128, 512]
+    attn_dropout: [0.0, 0.2]
+    ff_dropout: [0.0, 0.2]
 
 # Advanced configuration
 advanced:
@@ -82,7 +80,7 @@ advanced:
 
   # Intersample attention settings
   intersample:
-    enabled: true
+    enabled: false  # Disabled for speed
     batch_sampling_strategy: "random"  # How to sample intersample data
     attention_temperature: 1.0  # Temperature for attention softmax
 
@@ -94,4 +92,4 @@ advanced:
   # Memory optimization
   memory:
     checkpoint_activations: false  # Checkpoint activations to save memory
-    efficient_attention: false  # Use memory-efficient attention implementation
+    efficient_attention: true  # Use memory-efficient attention implementation

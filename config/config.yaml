@@ -1,57 +1,66 @@
-# Main configuration file for  ML pipeline
+# Main configuration file for ML pipeline
+# Optimized for 200k samples, 300 features, financial PnL prediction
 
 # Data configuration
 data:
   features_path: "data/df_X.csv"
   targets_path: "data/df_Y.csv"
-  feature_types_path: "data/feature_types.pkl"  # Dictionary with feature names as keys, "0" or "1" as values
-  test_size: 0.2
+  feature_types_path: "data/feature_types.pkl"
+  test_size: 0.15  # Reduced from 0.2 since you have plenty of data
+  validation_size: 0.15  # Explicit validation set
   random_state: 42
 
 # Preprocessing configuration
 preprocessing:
-  method: "feature_aware"  # Options: "feature_aware", "standard", "none"
-  scaler_additive: "standard"  # Options: "standard", "robust", "minmax"
-  scaler_multiplicative: "log"  # Options: "log", "minmax", "none"
-  handle_outliers: false
-  outlier_threshold: 3  # Standard deviations for outlier detection
+  method: "feature_aware"
+  scaler_additive: "robust"  # Better for financial data with outliers
+  scaler_multiplicative: "log"
+  handle_outliers: true  # Important for financial data
+  outlier_threshold: 4  # Less aggressive for returns
+  clip_outliers: true  # Clip instead of remove
+  clip_percentile: [0.1, 99.9]  # Clip extreme values
 
 # Feature selection configuration
 feature_selection:
-  method: "auto"  # Options: "smart_pca", "tree_based", "none", "auto"
-  pca_variance_threshold: 0.95
-  tree_based_top_k: 100
-  tree_based_estimator: "random_forest"  # Options: "random_forest", "xgboost"
+  method: "auto"
+  pca_variance_threshold: 0.99  # Keep more variance for financial data
+  tree_based_top_k: 150  # Half of features
+  tree_based_estimator: "lightgbm"  # Faster for large datasets
+  correlation_threshold: 0.95  # Remove highly correlated features
 
 # Model training configuration
 training:
   cv_folds: 5
-  validation_strategy: "kfold"  # Options: "kfold", "timeseries", "holdout"
-  early_stopping_rounds: 50  # For gradient boosting models
+  validation_strategy: "holdout"  # Faster with 200k samples
+  early_stopping_rounds: 100  # More patience with large data
   verbose: true
+  use_sample_weights: false  # Set true if some periods more important
 
 # Evaluation configuration
 evaluation:
-  primary_metric: "rmse"  # Options: "rmse", "mae", "r2", "mape", "mse"
+  primary_metric: "rmse"
   secondary_metrics:
     - "mae"
     - "r2"
     - "mape"
+    - "max_error"  # Important for risk management
+    - "explained_variance"
   calculate_feature_importance: true
   save_predictions: true
+  calculate_confidence_intervals: true  # For risk assessment
 
 # Models to run
 models_to_run:
-  - "ridge"          # Baseline linear model
-  - "elasticnet"     # Regularized linear model
-  - "random_forest"  # Tree baseline
-  - "xgboost"        # Gradient boosting
-  - "lightgbm"       # Fast gradient boosting
-  - "catboost"       # Categorical boosting
-  - "sparse_nn"      # Neural network with L1
-  - "tabnet"         # Attention-based tabular
-  - "saint"          # Transformer for tabular
-  - "ensemble"       # Combine best models
+  - "ridge"
+  - "elasticnet"
+  - "random_forest"
+  - "xgboost"
+  - "lightgbm"
+  - "catboost"
+  - "sparse_nn"
+  - "tabnet"
+  # - "saint"  # Optional - computationally expensive
+  - "ensemble"
 
 # Output configuration
 output:
@@ -64,11 +73,12 @@ output:
 
 # Logging configuration
 logging:
-  level: "INFO"  # Options: "DEBUG", "INFO", "WARNING", "ERROR"
+  level: "INFO"
   log_file: "logs/pipeline.log"
 
 # Computational resources
 resources:
-  n_jobs: -1  # Number of parallel jobs (-1 for all cores)
-  gpu_enabled: false  # Set to true if GPU is available for neural models
+  n_jobs: -1
+  gpu_enabled: true  # Enable if available
   seed: 42
+  chunk_size: 10000  # For batch processing large datasets

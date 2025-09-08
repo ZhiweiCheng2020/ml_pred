@@ -8,39 +8,41 @@ apply_feature_selection: false  # TabNet has built-in attention-based selection
 
 # Model architecture parameters
 architecture:
-  n_d: 8  # Width of the decision prediction layer
-  n_a: 8  # Width of the attention embedding for each mask
-  n_steps: 3  # Number of successive steps in the network
-  gamma: 1.3  # Coefficient for feature reusage in the masks
+  n_d: 32  # Width of the decision prediction layer (increased for capacity)
+  n_a: 32  # Width of the attention embedding for each mask (match n_d)
+  n_steps: 5  # Number of successive steps in the network (more for complex patterns)
+  gamma: 1.5  # Coefficient for feature reusage in the masks (moderate reuse)
   cat_idxs: []  # Indices of categorical columns (empty for all numerical)
   cat_dims: []  # Cardinality of categorical columns
   cat_emb_dim: 1  # Embedding dimension for categorical features
   n_independent: 2  # Number of independent GLU layers
   n_shared: 2  # Number of shared GLU layers
-  momentum: 0.02  # Momentum for batch normalization
+  momentum: 0.98  # Momentum for batch normalization (high for stability)
   mask_type: "sparsemax"  # Options: "sparsemax", "entmax"
+  epsilon: 1e-15  # For numerical stability
 
 # Training parameters
 training:
-  batch_size: 1024
-  virtual_batch_size: 128
+  batch_size: 2048  # Large batch for 200k samples
+  virtual_batch_size: 256  # Virtual batch size for batch norm
   epochs: 200
   learning_rate: 0.02
   optimizer: "adam"
   scheduler:
     enabled: true
     type: "cosine"  # Options: "cosine", "step", "reduce_on_plateau"
-    patience: 10
+    patience: 20
     factor: 0.5
   early_stopping:
     enabled: true
-    patience: 30
-    min_delta: 0.0001
-  clip_value: 1.0  # Gradient clipping
+    patience: 40
+    min_delta: 0.00001
+  clip_value: 2.0  # Gradient clipping
+  augmentation_probability: 0.0  # No augmentation for financial data
 
 # Regularization
 regularization:
-  lambda_sparse: 0.001  # Coefficient for the sparse regularization
+  lambda_sparse: 0.0001  # Coefficient for the sparse regularization (light)
   reg_weight: 1.0  # General regularization weight
   reg_type: "all"  # Options: "all", "last"
 
@@ -48,15 +50,14 @@ regularization:
 hyperparameter_tuning:
   enabled: true
   method: "optuna"
-  n_trials: 25
-  cv_folds: 3
+  n_trials: 20
+  cv_folds: 2
   param_space:
-    n_d: [8, 64]
-    n_a: [8, 64]
-    n_steps: [3, 10]
+    n_d: [16, 64]
+    n_a: [16, 64]
+    n_steps: [3, 7]
     gamma: [1.0, 2.0]
-    learning_rate: [0.001, 0.1]
-    batch_size: [256, 2048]
-    lambda_sparse: [0.0001, 0.01]
-    n_independent: [1, 5]
-    n_shared: [1, 5]
+    learning_rate: [0.005, 0.05]
+    batch_size: [1024, 4096]
+    lambda_sparse: [0.00001, 0.001]
+    virtual_batch_size: [128, 512]

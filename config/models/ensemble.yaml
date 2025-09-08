@@ -7,7 +7,7 @@ model_type: "ensemble"
 method: "stacking"  # Options: "voting", "stacking", "blending"
 
 # Base models to include in ensemble
-base_models:
+base_models:  # Will select best performing models dynamically
   - "ridge"
   - "elasticnet"
   - "random_forest"
@@ -16,26 +16,29 @@ base_models:
   - "catboost"
   - "sparse_nn"
   - "tabnet"
-  # - "saint"  # Uncomment if needed
+  # - "saint"  # Uncomment if SAINT is trained
 
 # Voting ensemble parameters
 voting:
   weights: "auto"  # Options: "auto", "uniform", or list of weights
   optimize_weights: true  # Use optimization to find best weights
+  optimization_method: "differential_evolution"  # Better than grid search
 
 # Stacking ensemble parameters
 stacking:
   meta_model: "ridge"  # Options: "ridge", "elasticnet", "xgboost", "linear"
-  use_probabilities: false  # For classification
+  use_probabilities: false  # For classification only
   cv_folds: 5
-  passthrough: false  # Include original features in meta-model
+  passthrough: false  # Don't include original features in meta-model
+  use_oof_predictions: true  # Use out-of-fold predictions for better generalization
   meta_model_params:
     alpha: 1.0
     fit_intercept: true
+    solver: "lsqr"  # Good for large datasets
 
 # Blending ensemble parameters
 blending:
-  blend_size: 0.2  # Proportion of training data for blending
+  blend_size: 0.15  # Proportion of training data for blending (smaller with lots of data)
   meta_model: "ridge"
   meta_model_params:
     alpha: 1.0
@@ -43,20 +46,23 @@ blending:
 # Model selection criteria
 model_selection:
   metric: "validation_rmse"  # Metric to use for selecting models
-  top_k: 5  # Number of top models to include
-  diversity_threshold: 0.3  # Correlation threshold for model diversity
-  min_performance: 0.7  # Minimum R2 score to include model
+  top_k: 6  # Number of top models to include
+  diversity_threshold: 0.5  # Correlation threshold for model diversity
+  min_performance: 0.5  # Minimum R2 score to include model
+  correlation_threshold: 0.9  # Remove models with highly correlated predictions
 
 # Ensemble optimization
 optimization:
   method: "bayesian"  # Options: "grid", "bayesian", "differential_evolution"
-  n_iter: 50
+  n_iter: 30
   scoring: "neg_mean_squared_error"
-  cv_folds: 5
+  cv_folds: 3
 
 # Advanced options
 advanced:
   use_oof_predictions: true  # Use out-of-fold predictions for stacking
-  calibrate_predictions: false  # Calibration for probability predictions
+  calibrate_predictions: false  # Calibration for probability predictions (classification)
   ensemble_selection: true  # Greedy ensemble selection
-  max_ensemble_size: 10
+  max_ensemble_size: 8  # Maximum number of models in ensemble
+  model_weights_constraint: "simplex"  # Ensure weights sum to 1
+  min_weight: 0.05  # Minimum 5% weight per model to ensure contribution

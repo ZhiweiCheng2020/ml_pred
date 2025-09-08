@@ -9,22 +9,23 @@ apply_feature_selection: true
 # Model parameters
 parameters:
   alpha: 1.0
-  l1_ratio: 0.5  # Balance between L1 and L2 regularization
+  l1_ratio: 0.7  # More L1 for feature selection
   fit_intercept: true
-  max_iter: 1000
-  tol: 0.0001
-  selection: "cyclic"  # Options: "cyclic", "random"
+  max_iter: 2000
+  tol: 0.001
+  selection: "cyclic"
+  warm_start: false
   random_state: 42
 
 # Hyperparameter tuning
 hyperparameter_tuning:
   enabled: true
-  method: "random_search"  # Options: "grid_search", "random_search", "optuna"
-  n_iter: 50  # For random search
-  cv_folds: 5
+  method: "optuna"
+  n_trials: 40
+  cv_folds: 3
   scoring: "neg_mean_squared_error"
-  param_distributions:
-    alpha: [0.0001, 0.001, 0.01, 0.1, 1.0, 10.0, 100.0]
-    l1_ratio: [0.1, 0.3, 0.5, 0.7, 0.9, 0.95, 0.99]
-    fit_intercept: [true, false]
+  param_space:
+    alpha: [0.01, 50.0]  # More focused range
+    l1_ratio: [0.5, 0.99]  # Focus on sparse solutions
     selection: ["cyclic", "random"]
+    tol: [0.0001, 0.001]

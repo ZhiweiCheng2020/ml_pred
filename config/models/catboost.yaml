@@ -4,28 +4,33 @@ model_name: "catboost"
 model_type: "tree"
 
 # Whether to apply feature selection for this model
-apply_feature_selection: false  # CatBoost handles high dimensions well
+apply_feature_selection: false
 
 # Model parameters
 parameters:
-  iterations: 1000
-  learning_rate: 0.03
-  depth: 6
+  iterations: 500
+  learning_rate: 0.05
+  depth: 8
   l2_leaf_reg: 3.0
   loss_function: "RMSE"
   eval_metric: "RMSE"
   random_strength: 1.0
-  bagging_temperature: 1.0
-  od_type: "Iter"  # Overfitting detector type
-  od_wait: 50  # Early stopping patience
+  bagging_temperature: 0.5  # Some randomness
+  border_count: 128  # Default, good for numerical features
+  grow_policy: "SymmetricTree"
+  bootstrap_type: "Bernoulli"  # Good for large datasets
+  subsample: 0.8
+  od_type: "Iter"
+  od_wait: 100
   random_seed: 42
   verbose: false
-  thread_count: -1  # Use all available cores
+  thread_count: -1
+  use_best_model: true
 
 # Early stopping
 early_stopping:
   enabled: true
-  rounds: 50
+  rounds: 100
   metric: "RMSE"
 
 # Hyperparameter tuning
@@ -33,12 +38,13 @@ hyperparameter_tuning:
   enabled: true
   method: "optuna"
   n_trials: 40
-  cv_folds: 5
+  cv_folds: 3
   scoring: "neg_mean_squared_error"
   param_space:
-    iterations: [500, 2000]
-    depth: [4, 10]
-    learning_rate: [0.01, 0.3]
+    iterations: [300, 1000]
+    depth: [6, 10]
+    learning_rate: [0.01, 0.1]
     l2_leaf_reg: [1, 10]
     random_strength: [0.5, 2.0]
-    bagging_temperature: [0.5, 2.0]
+    bagging_temperature: [0, 1.0]
+    subsample: [0.7, 0.9]

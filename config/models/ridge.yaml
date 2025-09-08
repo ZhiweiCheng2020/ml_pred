@@ -4,23 +4,26 @@ model_name: "ridge"
 model_type: "linear"
 
 # Whether to apply feature selection for this model
-apply_feature_selection: true
+apply_feature_selection: true  # Beneficial for linear models
 
 # Model parameters
 parameters:
-  alpha: 1.0
+  alpha: 10.0  # Start with moderate regularization
   fit_intercept: true
-  max_iter: 1000
-  solver: "auto"  # Options: "auto", "svd", "cholesky", "lsqr", "sparse_cg", "sag", "saga"
+  max_iter: 2000  # Increased for convergence
+  solver: "saga"  # Good for large datasets
   random_state: 42
+  tol: 0.001  # Balance speed vs accuracy
 
 # Hyperparameter tuning
 hyperparameter_tuning:
   enabled: true
-  method: "grid_search"  # Options: "grid_search", "random_search", "optuna"
-  cv_folds: 5
+  method: "optuna"  # Better than grid search for continuous params
+  n_trials: 30
+  cv_folds: 3  # Fewer folds for speed with large data
   scoring: "neg_mean_squared_error"
-  param_grid:
-    alpha: [0.001, 0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]
-    solver: ["auto", "svd", "cholesky", "lsqr"]
-    fit_intercept: [true, false]
+  param_space:
+    alpha: [0.01, 100.0]  # Narrower, more realistic range
+    solver: ["saga", "lsqr"]  # Best for large datasets
+    fit_intercept: [true]
+    tol: [0.0001, 0.01]
