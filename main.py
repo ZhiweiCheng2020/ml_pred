@@ -1,5 +1,5 @@
 """
-Main pipeline execution script
+Main pipeline execution script with comprehensive visualization for all models
 """
 
 import argparse
@@ -27,6 +27,66 @@ from src.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def visualize_model_results(model_name: str,
+                           model_results: dict,
+                           test_results: dict,
+                           y_test: pd.Series,
+                           visualizer: Visualizer,
+                           config: dict) -> None:
+    """
+    Create visualizations for a single model
+
+    Args:
+        model_name: Name of the model
+        model_results: Training and validation results
+        test_results: Test set results
+        y_test: True test values
+        visualizer: Visualizer instance
+        config: Configuration dictionary
+    """
+    logger.info(f"Creating visualizations for {model_name}...")
+
+    try:
+        # Get test predictions if available
+        if model_name in test_results and 'test_predictions' in test_results[model_name]:
+            test_predictions = test_results[model_name]['test_predictions']
+
+            # 1. Predictions vs Actual plot
+            visualizer.plot_predictions_vs_actual(
+                y_test, test_predictions,
+                model_name, 'test'
+            )
+
+            # 2. Residual distribution plot
+            visualizer.plot_residual_distribution(
+                y_test, test_predictions,
+                model_name
+            )
+
+        # 3. Feature importance plot (if available)
+        if model_results.get('feature_importance') is not None:
+            visualizer.plot_feature_importance(
+                model_results['feature_importance'],
+                model_name,
+                top_n=30  # Show top 30 features
+            )
+
+        # 4. Learning curves (if available)
+        if 'learning_history' in model_results:
+            history = model_results['learning_history']
+            if 'train_scores' in history and 'val_scores' in history:
+                visualizer.plot_learning_curves(
+                    history['train_scores'],
+                    history['val_scores'],
+                    model_name,
+                    metric=config.get('evaluation', {}).get('primary_metric', 'rmse')
+                )
+
+    except Exception as e:
+        logger.error(f"Error creating visualizations for {model_name}: {str(e)}")
+        logger.error(traceback.format_exc())
 
 
 def main(config_path: str = "config/config.yaml"):
@@ -216,49 +276,117 @@ def main(config_path: str = "config/config.yaml"):
         comparison_df.to_csv(comparison_path, index=False)
         logger.info(f"Model comparison saved to {comparison_path}")
 
-    # Visualizations
+
     logger.info("\n" + "=" * 60)
-    logger.info("CREATING VISUALIZATIONS")
+    logger.info("CREATING VISUALIZATIONS FOR ALL MODELS")
     logger.info("=" * 60)
 
     try:
+        # 1. Overall model comparison plot
         if not comparison_df.empty:
-            # Model comparison plot
-            visualizer.plot_model_comparison(comparison_df, 'rmse')
+            logger.info("Creating overall model comparison plot...")
+            primary_metric = config.get('evaluation', {}).get('primary_metric', 'rmse')
 
-        # Best model analysis - only if we have successful models
+            # Plot comparison for primary metric
+            visualizer.plot_model_comparison(comparison_df, primary_metric)
+
+            # Also plot comparison for other important metrics
+            secondary_metrics = config.get('evaluation', {}).get('secondary_metrics', ['mae', 'r2'])
+            for metric in secondary_metrics:
+                if f'val_{metric}' in comparison_df.columns or f'train_{metric}' in comparison_df.columns:
+                    visualizer.plot_model_comparison(comparison_df, metric)
+
+        # 2. Individual model visualizations
+        logger.info("\nCreating individual model visualizations...")
+
+        # Create a subdirectory for each model's plots
+        models_plot_dir = Path(config.get('output', {}).get('plots_dir', 'results/plots')) / 'models'
+        models_plot_dir.mkdir(parents=True, exist_ok=True)
+
+        for model_name in successful_models.keys():
+            logger.info(f"\n--- Visualizing {model_name} ---")
+
+            # Create model-specific subdirectory
+            model_plot_dir = models_plot_dir / model_name
+            model_plot_dir.mkdir(parents=True, exist_ok=True)
+
+            # Temporarily update visualizer output directory
+            original_output_dir = visualizer.output_dir
+            visualizer.output_dir = model_plot_dir
+
+            # Create all visualizations for this model
+            visualize_model_results(
+                model_name,
+                successful_models[model_name],
+                test_results,
+                y_test_np,
+                visualizer,
+                config
+            )
+
+            # Restore original output directory
+            visualizer.output_dir = original_output_dir
+
+        # 3. Comparative visualizations
+        logger.info("\n--- Creating comparative visualizations ---")
+
+        if len(successful_models) > 1 and not comparison_df.empty:
+            # Create a comparison of training times
+            from src.visualization_extensions import create_comparative_plots
+            create_comparative_plots(
+                comparison_df,
+                test_results,
+                y_test_np,
+                config.get('output', {}).get('plots_dir', 'results/plots')
+            )
+
+        # 4. Best model detailed analysis
         best_model_name = None
         if successful_models:
             try:
                 best_model_name = trainer.get_best_model('rmse', use_validation=True)
-                logger.info(f"Best model: {best_model_name}")
+                logger.info(f"\nBest model identified: {best_model_name}")
+
+                # Create a special "best_model" directory with comprehensive analysis
+                best_model_dir = Path(config.get('output', {}).get('plots_dir', 'results/plots')) / 'best_model'
+                best_model_dir.mkdir(parents=True, exist_ok=True)
+
+                visualizer.output_dir = best_model_dir
+
+                if best_model_name in test_results:
+                    logger.info(f"Creating detailed analysis for best model: {best_model_name}")
+
+                    # All standard plots for best model
+                    visualize_model_results(
+                        best_model_name,
+                        successful_models[best_model_name],
+                        test_results,
+                        y_test_np,
+                        visualizer,
+                        config
+                    )
+
+                    # Additional detailed analysis for best model
+                    from src.visualization_extensions import create_detailed_best_model_analysis
+                    create_detailed_best_model_analysis(
+                        best_model_name,
+                        test_results[best_model_name],
+                        y_test_np,
+                        best_model_dir
+                    )
+
             except ValueError as e:
                 logger.warning(f"Could not determine best model: {e}")
-                # Use the first successful model as fallback
-                best_model_name = list(successful_models.keys())[0]
-                logger.info(f"Using {best_model_name} for visualization")
 
-        if best_model_name and best_model_name in test_results:
-            best_test_results = test_results[best_model_name]
+        # 5. Summary report with all plots referenced
+        logger.info("\nCreating visualization summary report...")
+        create_visualization_summary_report(
+            successful_models,
+            test_results,
+            comparison_df,
+            config.get('output', {}).get('plots_dir', 'results/plots')
+        )
 
-            # Predictions vs actual plot
-            visualizer.plot_predictions_vs_actual(
-                y_test_np, best_test_results['test_predictions'],
-                best_model_name, 'test'
-            )
-
-            # Residual distribution
-            visualizer.plot_residual_distribution(
-                y_test_np, best_test_results['test_predictions'],
-                best_model_name
-            )
-
-            # Feature importance for best model
-            if successful_models[best_model_name].get('feature_importance') is not None:
-                visualizer.plot_feature_importance(
-                    successful_models[best_model_name]['feature_importance'],
-                    best_model_name
-                )
     except Exception as e:
         logger.error(f"Error creating visualizations: {str(e)}")
         logger.error(traceback.format_exc())
@@ -283,11 +411,70 @@ def main(config_path: str = "config/config.yaml"):
     logger.info("=" * 60)
     if successful_models:
         logger.info(f"PIPELINE COMPLETED - {len(successful_models)} models trained successfully")
+        logger.info(f"Visualizations created for all {len(successful_models)} models")
     else:
         logger.info("PIPELINE COMPLETED WITH ERRORS - No models trained successfully")
     logger.info("=" * 60)
 
     return final_results
+
+
+def create_visualization_summary_report(successful_models: dict,
+                                       test_results: dict,
+                                       comparison_df: pd.DataFrame,
+                                       plots_dir: str) -> None:
+    """
+    Create a summary report of all visualizations created
+
+    Args:
+        successful_models: Dictionary of successful model results
+        test_results: Dictionary of test results
+        comparison_df: Model comparison DataFrame
+        plots_dir: Directory containing plots
+    """
+    try:
+        plots_path = Path(plots_dir)
+        report_path = plots_path / 'visualization_summary.md'
+
+        with open(report_path, 'w') as f:
+            f.write("# Visualization Summary Report\n\n")
+            f.write(f"Generated: {pd.Timestamp.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+
+            f.write("## Overview\n")
+            f.write(f"- Total models visualized: {len(successful_models)}\n")
+            f.write(f"- Models with test results: {len(test_results)}\n\n")
+
+            f.write("## Available Visualizations\n\n")
+
+            f.write("### 1. Overall Comparisons\n")
+            f.write("- `model_comparison_*.png`: Comparative bar charts for all metrics\n\n")
+
+            f.write("### 2. Individual Model Plots\n")
+            for model_name in successful_models.keys():
+                f.write(f"\n#### {model_name}\n")
+                model_dir = plots_path / 'models' / model_name
+                if model_dir.exists():
+                    plots = list(model_dir.glob('*.png'))
+                    for plot in plots:
+                        f.write(f"- `{plot.name}`\n")
+
+            f.write("\n### 3. Best Model Analysis\n")
+            best_model_dir = plots_path / 'best_model'
+            if best_model_dir.exists():
+                plots = list(best_model_dir.glob('*.png'))
+                for plot in plots:
+                    f.write(f"- `{plot.name}`\n")
+
+            f.write("\n## Model Performance Summary\n\n")
+            if not comparison_df.empty:
+                f.write("```\n")
+                f.write(comparison_df.to_string(index=False))
+                f.write("\n```\n")
+
+        logger.info(f"Visualization summary report saved to {report_path}")
+
+    except Exception as e:
+        logger.error(f"Error creating visualization summary: {str(e)}")
 
 
 if __name__ == "__main__":
