@@ -7,6 +7,7 @@ import pandas as pd
 import logging
 import time
 from pathlib import Path
+import joblib
 from typing import Dict, Any, Optional, Tuple, List
 from .models import get_model
 from .preprocessor import Preprocessor
@@ -217,6 +218,11 @@ class Trainer:
                 logger.error(f"Error training ensemble: {str(e)}")
                 all_results['ensemble'] = {'error': str(e)}
 
+        # After training all models, save them for future predictions
+        self.save_trained_models(
+            self.config.get('output', {}).get('model_artifacts_dir', 'results/model_artifacts')
+        )
+
         return all_results
 
     def train_ensemble(self,
@@ -348,3 +354,38 @@ class Trainer:
         logger.info(f"Best model: {best_model} with {metric}={best_score:.4f}")
 
         return best_model
+
+    def save_trained_models(self, output_dir: str = "results/model_artifacts") -> None:
+        """
+        Save all trained models and their components for future predictions
+
+        Args:
+            output_dir: Directory to save model artifacts
+        """
+        output_path = Path(output_dir)
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        logger.info(f"Saving trained models to {output_dir}")
+
+        for model_name, model in self.trained_models.items():
+            try:
+                # Save the model
+                model_path = output_path / f"{model_name}_model.pkl"
+                joblib.dump(model, model_path)
+                logger.info(f"Saved {model_name} model to {model_path}")
+
+                # Save preprocessor if exists
+                if model_name in self.preprocessors:
+                    preprocessor_path = output_path / f"{model_name}_preprocessor.pkl"
+                    joblib.dump(self.preprocessors[model_name], preprocessor_path)
+                    logger.info(f"Saved {model_name} preprocessor")
+
+                # Save feature selector if exists
+                if model_name in self.feature_selectors:
+                    selector_path = output_path / f"{model_name}_feature_selector.pkl"
+                    joblib.dump(self.feature_selectors[model_name], selector_path)
+                    logger.info(f"Saved {model_name} feature selector")
+
+            except Exception as e:
+                logger.error(f"Error saving {model_name}: {str(e)}")
+
