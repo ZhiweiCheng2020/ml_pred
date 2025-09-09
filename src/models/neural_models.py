@@ -178,10 +178,13 @@ class SparseNNModel(BaseModel):
         if gpu_available:
             logger.info(f"Training on GPU: {tf.config.list_physical_devices('GPU')}")
 
-        # Ensure y is properly shaped
-        y = self._ensure_1d_target(y)
+        # Ensure data is float32 to avoid type conflicts
+        X = X.astype(np.float32)
+        y = self._ensure_1d_target(y).astype(np.float32)
+        if X_val is not None:
+            X_val = X_val.astype(np.float32)
         if y_val is not None:
-            y_val = self._ensure_1d_target(y_val)
+            y_val = self._ensure_1d_target(y_val).astype(np.float32)
 
         # Build model
         input_dim = X.shape[1]
@@ -198,7 +201,7 @@ class SparseNNModel(BaseModel):
                 patience=early_stopping_config.get('patience', 20),
                 min_delta=early_stopping_config.get('min_delta', 0.0001),
                 restore_best_weights=early_stopping_config.get('restore_best_weights', True),
-                start_from_epoch=0  # New parameter in recent versions
+                verbose=0
             ))
 
         # Reduce learning rate
@@ -208,7 +211,8 @@ class SparseNNModel(BaseModel):
                 monitor='val_loss' if X_val is not None else 'loss',
                 factor=reduce_lr_config.get('factor', 0.5),
                 patience=reduce_lr_config.get('patience', 10),
-                min_lr=reduce_lr_config.get('min_lr', 1e-5)
+                min_lr=reduce_lr_config.get('min_lr', 1e-5),
+                verbose=0
             ))
 
         # Prepare validation data
@@ -224,36 +228,16 @@ class SparseNNModel(BaseModel):
         epochs = self.training_params.get('epochs', 200)
         validation_split = self.training_params.get('validation_split', 0.2) if validation_data is None else 0.0
 
-        # Use tf.data for better performance (TF 2.15+ optimizations)
-        if gpu_available and len(X) > 10000:
-            train_dataset = tf.data.Dataset.from_tensor_slices((X, y))
-            train_dataset = train_dataset.batch(batch_size)
-            train_dataset = train_dataset.prefetch(tf.data.AUTOTUNE)
-            train_dataset = train_dataset.cache()  # Cache for better performance
-
-            if validation_data:
-                val_dataset = tf.data.Dataset.from_tensor_slices(validation_data)
-                val_dataset = val_dataset.batch(batch_size)
-                val_dataset = val_dataset.prefetch(tf.data.AUTOTUNE)
-                validation_data = val_dataset
-
-            self.model.fit(
-                train_dataset,
-                epochs=epochs,
-                validation_data=validation_data,
-                callbacks=callbacks_list,
-                verbose=0
-            )
-        else:
-            self.model.fit(
-                X, y,
-                batch_size=batch_size,
-                epochs=epochs,
-                validation_data=validation_data,
-                validation_split=validation_split,
-                callbacks=callbacks_list,
-                verbose=0
-            )
+        # Train with standard fit method (simpler and more stable)
+        self.model.fit(
+            X, y,
+            batch_size=batch_size,
+            epochs=epochs,
+            validation_data=validation_data,
+            validation_split=validation_split,
+            callbacks=callbacks_list,
+            verbose=0
+        )
 
         self.is_fitted = True
         logger.info(f"{self.model_name} model trained successfully")
