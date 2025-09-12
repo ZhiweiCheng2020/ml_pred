@@ -49,6 +49,11 @@ evaluation:
   save_predictions: true
   calculate_confidence_intervals: true  # For risk assessment
 
+# Multi-output configuration
+  multi_output:
+    enabled: true
+    n_outputs: 3
+
 # Models to run
 models_to_run:
   - "ridge"

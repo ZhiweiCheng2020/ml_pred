@@ -7,7 +7,7 @@ import numpy as np
 import pickle
 import logging
 from pathlib import Path
-from typing import Tuple, Dict, Optional, Any
+from typing import Tuple, Dict, Optional, Any, Union
 from sklearn.model_selection import train_test_split
 
 logger = logging.getLogger(__name__)
@@ -27,17 +27,22 @@ class DataLoader:
         self.data_config = config['data']
         self.random_state = self.data_config.get('random_state', 42)
 
+        # Multi-output support
+        self.multi_output_config = config.get('evaluation', {}).get('multi_output', {})
+        self.is_multi_output = self.multi_output_config.get('enabled', False)
+        self.n_outputs = self.multi_output_config.get('n_outputs', 1)
+
         self.X = None
         self.y = None
         self.feature_types = None
         self.feature_names = None
 
-    def load_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, str]]:
+    def load_data(self) -> Tuple[pd.DataFrame, Union[pd.DataFrame, pd.Series], Dict[str, str]]:
         """
         Load features, targets, and feature types
 
         Returns:
-            Tuple of (features DataFrame, targets DataFrame, feature_types dict)
+            Tuple of (features DataFrame, targets DataFrame/Series, feature_types dict)
         """
         logger.info("Loading data...")
 
@@ -56,12 +61,20 @@ class DataLoader:
 
         self.y = pd.read_csv(targets_path)
 
-        # Handle single column target
-        if self.y.shape[1] == 1:
-            self.y = self.y.iloc[:, 0]
+        # NEW: Handle target format based on multi-output configuration
+        if self.is_multi_output:
+            if self.y.shape[1] >= self.n_outputs:
+                self.y = self.y.iloc[:, :self.n_outputs]  # Take first n_outputs columns
+                logger.info(f"Multi-output: Using {self.n_outputs} target columns")
+            else:
+                raise ValueError(f"Expected {self.n_outputs} target columns, found {self.y.shape[1]}")
         else:
-            logger.warning(f"Multiple target columns found: {self.y.shape[1]}. Using first column.")
-            self.y = self.y.iloc[:, 0]
+            # Single column target (original behavior)
+            if self.y.shape[1] == 1:
+                self.y = self.y.iloc[:, 0]
+            else:
+                logger.warning(f"Multiple target columns found: {self.y.shape[1]}. Using first column.")
+                self.y = self.y.iloc[:, 0]
 
         logger.info(f"Loaded targets: shape {self.y.shape}")
 
@@ -94,9 +107,15 @@ class DataLoader:
             n_missing = self.X.isnull().sum().sum()
             logger.warning(f"Found {n_missing} missing values in features")
 
-        if pd.isna(self.y).any():
-            n_missing = pd.isna(self.y).sum()
-            logger.warning(f"Found {n_missing} missing values in targets")
+        # Handle both DataFrame and Series for targets
+        if isinstance(self.y, pd.DataFrame):
+            if self.y.isnull().any().any():
+                n_missing = self.y.isnull().sum().sum()
+                logger.warning(f"Found {n_missing} missing values in targets")
+        else:
+            if pd.isna(self.y).any():
+                n_missing = pd.isna(self.y).sum()
+                logger.warning(f"Found {n_missing} missing values in targets")
 
         # Check feature types consistency
         missing_types = set(self.X.columns) - set(self.feature_types.keys())
@@ -114,15 +133,15 @@ class DataLoader:
 
     def split_data(self,
                    X: Optional[pd.DataFrame] = None,
-                   y: Optional[pd.Series] = None,
+                   y: Optional[Union[pd.Series, pd.DataFrame]] = None,
                    test_size: Optional[float] = None,
-                   stratify: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+                   stratify: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame, Union[pd.Series, pd.DataFrame], Union[pd.Series, pd.DataFrame]]:
         """
         Split data into train and test sets
 
         Args:
             X: Features DataFrame (uses self.X if None)
-            y: Target Series (uses self.y if None)
+            y: Target Series/DataFrame (uses self.y if None)
             test_size: Test set size (uses config value if None)
             stratify: Whether to stratify split (for classification)
 
@@ -138,7 +157,8 @@ class DataLoader:
 
         logger.info(f"Splitting data with test_size={test_size}")
 
-        stratify_param = y if stratify else None
+        # No stratification for multi-output regression
+        stratify_param = y if stratify and not self.is_multi_output else None
 
         X_train, X_test, y_train, y_test = train_test_split(
             X, y,
@@ -178,17 +198,34 @@ class DataLoader:
 
         feature_groups = self.get_feature_groups()
 
-        summary = {
-            'n_samples': len(self.X),
-            'n_features': len(self.X.columns),
-            'n_additive_features': len(feature_groups['additive']),
-            'n_multiplicative_features': len(feature_groups['multiplicative']),
-            'target_mean': float(self.y.mean()),
-            'target_std': float(self.y.std()),
-            'target_min': float(self.y.min()),
-            'target_max': float(self.y.max()),
-            'missing_features': int(self.X.isnull().sum().sum()),
-            'missing_targets': int(pd.isna(self.y).sum())
-        }
+        # NEW: Handle both single and multi-output targets
+        if isinstance(self.y, pd.DataFrame):
+            summary = {
+                'n_samples': len(self.X),
+                'n_features': len(self.X.columns),
+                'n_additive_features': len(feature_groups['additive']),
+                'n_multiplicative_features': len(feature_groups['multiplicative']),
+                'target_mean': self.y.mean().to_dict(),
+                'target_std': self.y.std().to_dict(),
+                'target_min': self.y.min().to_dict(),
+                'target_max': self.y.max().to_dict(),
+                'missing_features': int(self.X.isnull().sum().sum()),
+                'missing_targets': int(self.y.isnull().sum().sum()),
+                'n_targets': self.y.shape[1]
+            }
+        else:
+            summary = {
+                'n_samples': len(self.X),
+                'n_features': len(self.X.columns),
+                'n_additive_features': len(feature_groups['additive']),
+                'n_multiplicative_features': len(feature_groups['multiplicative']),
+                'target_mean': float(self.y.mean()),
+                'target_std': float(self.y.std()),
+                'target_min': float(self.y.min()),
+                'target_max': float(self.y.max()),
+                'missing_features': int(self.X.isnull().sum().sum()),
+                'missing_targets': int(pd.isna(self.y).sum()),
+                'n_targets': 1
+            }
 
         return summary

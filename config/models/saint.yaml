@@ -16,6 +16,7 @@ architecture:
   ff_dropout: 0.1  # Dropout for feed-forward layers
   use_intersample_attention: false  # Disable for speed on large datasets
   d_ff_multiplier: 4  # Feed-forward dimension multiplier (d_ff = dim * d_ff_multiplier)
+  output_dim: 3  # MINIMAL CHANGE: Set to 3 for multi-output
 
 # Training parameters
 training:
@@ -44,52 +45,4 @@ training:
     monitor: "val_loss"  # Metric to monitor
 
 # Data augmentation (specific to SAINT)
-augmentation:
-  mixup: false  # Disable for financial data
-  mixup_alpha: 0.2  # Controls the strength of mixup
-  cutmix: false  # Disable for financial data
-  cutmix_alpha: 1.0
-
-# Regularization
-regularization:
-  label_smoothing: 0.0  # No label smoothing for regression
-  dropout: 0.1  # General dropout rate
-
-# Hyperparameter tuning
-hyperparameter_tuning:
-  enabled: false  # Too expensive - set to true only if needed
-  method: "optuna"
-  n_trials: 10  # Few trials due to computational cost
-  cv_folds: 2
-  scoring: "neg_mean_squared_error"
-  param_space:
-    dim: [32, 128]
-    depth: [3, 6]
-    heads: [4, 8]
-    learning_rate: [0.0001, 0.01]
-    batch_size: [128, 512]
-    attn_dropout: [0.0, 0.2]
-    ff_dropout: [0.0, 0.2]
-
-# Advanced configuration
-advanced:
-  # Gradient clipping
-  gradient_clipping:
-    enabled: true
-    max_norm: 1.0
-
-  # Intersample attention settings
-  intersample:
-    enabled: false  # Disabled for speed
-    batch_sampling_strategy: "random"  # How to sample intersample data
-    attention_temperature: 1.0  # Temperature for attention softmax
-
-  # Model initialization
-  initialization:
-    method: "xavier_uniform"  # Options: "xavier_uniform", "kaiming_normal", "normal"
-    std: 0.02  # Standard deviation for normal initialization
-
-  # Memory optimization
-  memory:
-    checkpoint_activations: false  # Checkpoint activations to save memory
-    efficient_attention: true  # Use memory-efficient attention implementation
+aug

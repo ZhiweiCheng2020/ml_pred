@@ -1,5 +1,5 @@
 """
-Neural network models
+Neural network models - Minimal changes for multi-output support
 """
 
 import numpy as np
@@ -178,13 +178,17 @@ class SparseNNModel(BaseModel):
         if gpu_available:
             logger.info(f"Training on GPU: {tf.config.list_physical_devices('GPU')}")
 
+        y = np.array(y)
+        if y_val is not None:
+            y_val = np.array(y_val)
+
         # Ensure data is float32 to avoid type conflicts
         X = X.astype(np.float32)
-        y = self._ensure_1d_target(y).astype(np.float32)
+        y = y.astype(np.float32)
         if X_val is not None:
             X_val = X_val.astype(np.float32)
         if y_val is not None:
-            y_val = self._ensure_1d_target(y_val).astype(np.float32)
+            y_val = y_val.astype(np.float32)
 
         # Build model
         input_dim = X.shape[1]
@@ -253,7 +257,7 @@ class SparseNNModel(BaseModel):
         batch_size = 1024 if gpu_available else 32
 
         predictions = self.model.predict(X, batch_size=batch_size, verbose=0)
-        return predictions.flatten()
+        return predictions
 
     def _ensure_1d_target(self, y: np.ndarray) -> np.ndarray:
         """Ensure target is 1D for regression"""
@@ -379,7 +383,7 @@ class TabNetModel(BaseModel):
             raise ValueError("Model not fitted. Call fit() first.")
 
         predictions = self.model.predict(X)
-        return predictions.flatten()
+        return predictions
 
     def _ensure_2d_target(self, y: np.ndarray) -> np.ndarray:
         """Ensure target is 2D for TabNet"""
@@ -475,10 +479,12 @@ class SAINTModel(BaseModel):
                 x = self.dropout(x)
                 return self.fc3(x)
 
+        output_dim = self.architecture.get('output_dim', 1)
+
         model = SimpleSAINT(
             input_dim,
             hidden_dim=self.architecture.get('dim', 64),
-            output_dim=1
+            output_dim=output_dim
         )
 
         return model.to(self.device)
@@ -492,6 +498,10 @@ class SAINTModel(BaseModel):
         # Build model
         input_dim = X.shape[1]
         self.model = self.build_model(input_dim)
+
+        y = np.array(y)
+        if y_val is not None:
+            y_val = np.array(y_val)
 
         # Convert to tensors with proper dtype
         X_tensor = torch.FloatTensor(X).to(self.device)
@@ -526,7 +536,13 @@ class SAINTModel(BaseModel):
         for epoch in range(epochs):
             # Forward pass
             outputs = self.model(X_tensor)
-            loss = F.mse_loss(outputs.squeeze(), y_tensor)
+
+            if len(y_tensor.shape) > 1 and y_tensor.shape[1] > 1:
+                # Multi-output
+                loss = F.mse_loss(outputs, y_tensor)
+            else:
+                # Single output
+                loss = F.mse_loss(outputs.squeeze(), y_tensor.flatten())
 
             # Backward pass
             optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
@@ -555,4 +571,4 @@ class SAINTModel(BaseModel):
             X_tensor = torch.FloatTensor(X).to(self.device)
             predictions = self.model(X_tensor).cpu().numpy()
 
-        return predictions.flatten()
+        return predictions

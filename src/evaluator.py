@@ -26,6 +26,11 @@ class Evaluator:
         self.primary_metric = self.eval_config.get('primary_metric', 'rmse')
         self.secondary_metrics = self.eval_config.get('secondary_metrics', ['mae', 'r2'])
 
+        # Multi-output support
+        self.multi_output_config = self.eval_config.get('multi_output', {})
+        self.is_multi_output = self.multi_output_config.get('enabled', False)
+        self.n_outputs = self.multi_output_config.get('n_outputs', 1)
+
     def evaluate(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
         """
         Calculate evaluation metrics
@@ -37,6 +42,20 @@ class Evaluator:
         Returns:
             Dictionary of metrics
         """
+        # Convert to arrays
+        y_true = np.array(y_true)
+        y_pred = np.array(y_pred)
+
+        # Check if data is multi-output
+        is_multi_output_data = len(y_true.shape) > 1 and y_true.shape[1] > 1
+
+        if is_multi_output_data:
+            return self._evaluate_multi_output(y_true, y_pred)
+        else:
+            return self._evaluate_single_output(y_true.flatten(), y_pred.flatten())
+
+    def _evaluate_single_output(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+        """Evaluate single output (original logic)"""
         metrics = {}
 
         # Primary metric
@@ -53,6 +72,40 @@ class Evaluator:
         # Always calculate MSE for compatibility
         if 'mse' not in metrics:
             metrics['mse'] = mean_squared_error(y_true, y_pred)
+
+        return metrics
+
+    def _evaluate_multi_output(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+        """NEW: Evaluate multi-output"""
+        metrics = {}
+        n_outputs = y_true.shape[1]
+
+        # Individual output metrics
+        for i in range(n_outputs):
+            y_true_i = y_true[:, i]
+            y_pred_i = y_pred[:, i]
+
+            # Calculate metrics for this output
+            for metric_name in [self.primary_metric] + self.secondary_metrics:
+                metric_value = self._calculate_metric(y_true_i, y_pred_i, metric_name)
+                metrics[f"output_{i}_{metric_name}"] = metric_value
+
+        # Overall metrics (average across outputs)
+        for metric_name in [self.primary_metric] + self.secondary_metrics:
+            if metric_name == 'rmse':
+                overall_mse = np.mean((y_true - y_pred) ** 2)
+                metrics[f"overall_{metric_name}"] = np.sqrt(overall_mse)
+            elif metric_name == 'mse':
+                metrics[f"overall_{metric_name}"] = np.mean((y_true - y_pred) ** 2)
+            elif metric_name == 'mae':
+                metrics[f"overall_{metric_name}"] = np.mean(np.abs(y_true - y_pred))
+            elif metric_name == 'r2':
+                # Use sklearn's multioutput scoring
+                metrics[f"overall_{metric_name}"] = r2_score(y_true, y_pred, multioutput='uniform_average')
+            else:
+                # Average individual output metrics
+                output_metrics = [metrics[f"output_{i}_{metric_name}"] for i in range(n_outputs)]
+                metrics[f"overall_{metric_name}"] = np.mean(output_metrics)
 
         return metrics
 
@@ -123,12 +176,21 @@ class Evaluator:
 
         comparison_df = pd.DataFrame(comparison_data)
 
-        # Sort by primary metric (validation if available, else training)
-        sort_column = f'val_{self.primary_metric}'
-        if sort_column not in comparison_df.columns:
-            sort_column = f'train_{self.primary_metric}'
+        # Sort by overall metric if available, otherwise primary metric
+        sort_candidates = [
+            f'val_overall_{self.primary_metric}',
+            f'val_{self.primary_metric}',
+            f'train_overall_{self.primary_metric}',
+            f'train_{self.primary_metric}'
+        ]
 
-        if sort_column in comparison_df.columns:
+        sort_column = None
+        for candidate in sort_candidates:
+            if candidate in comparison_df.columns:
+                sort_column = candidate
+                break
+
+        if sort_column:
             ascending = self.primary_metric in ['rmse', 'mse', 'mae', 'mape']
             comparison_df = comparison_df.sort_values(sort_column, ascending=ascending)
 
