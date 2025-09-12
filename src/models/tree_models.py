@@ -1,11 +1,12 @@
 """
-Tree-based models
+Tree-based models with multi-output support
 """
 
 import numpy as np
 import logging
 from typing import Dict, Any, Optional
 from sklearn.ensemble import RandomForestRegressor
+from sklearn.multioutput import MultiOutputRegressor
 import xgboost as xgb
 import lightgbm as lgb
 import catboost as cb
@@ -55,7 +56,7 @@ class RandomForestModel(BaseModel):
 
 
 class XGBoostModel(BaseModel):
-    """XGBoost Regression model"""
+    """XGBoost Regression model with native multi-output support"""
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize XGBoost model"""
@@ -72,6 +73,12 @@ class XGBoostModel(BaseModel):
         for param in fit_only_params:
             model_params.pop(param, None)
 
+        # Add multi-output support parameters if not present
+        if 'tree_method' not in model_params:
+            model_params['tree_method'] = 'hist'
+        if 'multi_strategy' not in model_params:
+            model_params['multi_strategy'] = 'multi_output_tree'
+
         return xgb.XGBRegressor(**model_params)
 
     def fit(self, X: np.ndarray, y: np.ndarray,
@@ -79,6 +86,11 @@ class XGBoostModel(BaseModel):
             y_val: Optional[np.ndarray] = None) -> 'XGBoostModel':
         """Fit XGBoost model"""
         logger.info(f"Training {self.model_name} model...")
+
+        # Check if multi-output
+        is_multioutput = len(y.shape) > 1 and y.shape[1] > 1
+        if is_multioutput:
+            logger.info(f"Detected multi-output data: {y.shape[1]} outputs")
 
         # Tune hyperparameters if enabled
         if self.hyperparameter_tuning.get('enabled', False):
@@ -118,12 +130,14 @@ class XGBoostModel(BaseModel):
 
 
 class LightGBMModel(BaseModel):
-    """LightGBM Regression model"""
+    """LightGBM Regression model with MultiOutputRegressor for multi-output support"""
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize LightGBM model"""
         super().__init__(config)
         self.model_name = 'lightgbm'
+        self.is_multioutput = False
+        self.base_model = None
 
     def build_model(self) -> lgb.LGBMRegressor:
         """Build LightGBM model with current parameters"""
@@ -132,36 +146,54 @@ class LightGBMModel(BaseModel):
     def fit(self, X: np.ndarray, y: np.ndarray,
             X_val: Optional[np.ndarray] = None,
             y_val: Optional[np.ndarray] = None) -> 'LightGBMModel':
-        """Fit LightGBM model"""
+        """Fit LightGBM model with multi-output support"""
         logger.info(f"Training {self.model_name} model...")
+
+        # Check if multi-output
+        self.is_multioutput = len(y.shape) > 1 and y.shape[1] > 1
+
+        if self.is_multioutput:
+            logger.info(f"Using MultiOutputRegressor for {y.shape[1]} outputs")
 
         # Tune hyperparameters if enabled
         if self.hyperparameter_tuning.get('enabled', False):
             best_params = self.tune_hyperparameters(X, y, X_val, y_val)
             self.parameters.update(best_params)
 
-        # Build model
-        self.model = self.build_model()
+        # Build base model
+        self.base_model = self.build_model()
 
-        # Prepare eval set for early stopping
-        eval_set = None
-        callbacks = None
+        # Wrap with MultiOutputRegressor if multi-output
+        if self.is_multioutput:
+            self.model = MultiOutputRegressor(self.base_model)
+        else:
+            self.model = self.base_model
 
-        if X_val is not None and y_val is not None:
-            eval_set = [(X_val, y_val)]
-            if self.config.get('early_stopping', {}).get('enabled', False):
-                early_stopping_rounds = self.config['early_stopping'].get('rounds', 50)
-                callbacks = [lgb.early_stopping(early_stopping_rounds),
-                             lgb.log_evaluation(period=0)]
+        # For multi-output, we can't use LightGBM's native eval_set with MultiOutputRegressor
+        # So we fit without early stopping for multi-output case
+        if self.is_multioutput:
+            # Simple fit for multi-output
+            self.model.fit(X, y)
+        else:
+            # Original single-output logic with eval_set
+            eval_set = None
+            callbacks = None
 
-        # Fit model
-        fit_params = {}
-        if eval_set is not None:
-            fit_params['eval_set'] = eval_set
-        if callbacks is not None:
-            fit_params['callbacks'] = callbacks
+            if X_val is not None and y_val is not None:
+                eval_set = [(X_val, y_val)]
+                if self.config.get('early_stopping', {}).get('enabled', False):
+                    early_stopping_rounds = self.config['early_stopping'].get('rounds', 50)
+                    callbacks = [lgb.early_stopping(early_stopping_rounds),
+                                 lgb.log_evaluation(period=0)]
 
-        self.model.fit(X, y, **fit_params)
+            # Fit model
+            fit_params = {}
+            if eval_set is not None:
+                fit_params['eval_set'] = eval_set
+            if callbacks is not None:
+                fit_params['callbacks'] = callbacks
+
+            self.model.fit(X, y, **fit_params)
 
         self.is_fitted = True
         logger.info(f"{self.model_name} model trained successfully")
@@ -174,6 +206,46 @@ class LightGBMModel(BaseModel):
             raise ValueError("Model not fitted. Call fit() first.")
 
         return self.model.predict(X)
+
+    def get_feature_importance(self, feature_names: Optional[list] = None) -> Optional['pd.DataFrame']:
+        """Get feature importance - handle both single and multi-output cases"""
+        if not self.is_fitted:
+            logger.warning("Model not fitted. No feature importance available.")
+            return None
+
+        if self.is_multioutput:
+            # For MultiOutputRegressor, we need to aggregate feature importance across estimators
+            try:
+                import pandas as pd
+
+                # Get feature importance from each estimator
+                importances_list = []
+                for i, estimator in enumerate(self.model.estimators_):
+                    if hasattr(estimator, 'feature_importances_'):
+                        importances_list.append(estimator.feature_importances_)
+
+                if importances_list:
+                    # Average importance across all estimators
+                    avg_importances = np.mean(importances_list, axis=0)
+
+                    if feature_names is None:
+                        feature_names = [f'feature_{i}' for i in range(len(avg_importances))]
+
+                    feature_importance_df = pd.DataFrame({
+                        'feature': feature_names,
+                        'importance': avg_importances
+                    }).sort_values('importance', ascending=False)
+
+                    self.feature_importance = feature_importance_df
+                    return feature_importance_df
+            except Exception as e:
+                logger.warning(f"Could not extract feature importance for multi-output model: {e}")
+                return None
+        else:
+            # Single output - use parent method
+            return super().get_feature_importance(feature_names)
+
+        return None
 
 
 class CatBoostModel(BaseModel):
