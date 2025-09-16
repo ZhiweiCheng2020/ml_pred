@@ -36,10 +36,40 @@ class DataLoader:
         self.y = None
         self.feature_types = None
         self.feature_names = None
+        self.sample_weights = None
+
+    def create_sample_weights(self, n_samples: int) -> np.ndarray:
+        """
+        Create sample weights with double weight for second quarter of data
+
+        Args:
+            n_samples: Total number of samples
+
+        Returns:
+            Array of sample weights
+        """
+        weights = np.ones(n_samples, dtype=np.float64)
+
+        # Calculate quarter boundaries
+        quarter_size = n_samples // 4
+
+        # Second quarter gets double weight (2.0)
+        start_idx = quarter_size
+        end_idx = 2 * quarter_size
+        weights[start_idx:end_idx] = 2.0
+
+        logger.info(f"Created sample weights: {n_samples} total samples")
+        logger.info(f"- First quarter (0-{quarter_size}): weight=1.0")
+        logger.info(f"- Second quarter ({start_idx}-{end_idx}): weight=2.0")
+        logger.info(f"- Third quarter ({end_idx}-{3*quarter_size}): weight=1.0")
+        logger.info(f"- Fourth quarter ({3*quarter_size}-{n_samples}): weight=1.0")
+        logger.info(f"Total weighted samples: {np.sum(weights):.0f}")
+
+        return weights
 
     def load_data(self) -> Tuple[pd.DataFrame, Union[pd.DataFrame, pd.Series], Dict[str, str]]:
         """
-        Load features, targets, and feature types
+        Load features, targets, feature types, and create sample weights
 
         Returns:
             Tuple of (features DataFrame, targets DataFrame/Series, feature_types dict)
@@ -61,7 +91,7 @@ class DataLoader:
 
         self.y = pd.read_csv(targets_path)
 
-        # NEW: Handle target format based on multi-output configuration
+        # Handle target format based on multi-output configuration
         if self.is_multi_output:
             if self.y.shape[1] >= self.n_outputs:
                 self.y = self.y.iloc[:, :self.n_outputs]  # Take first n_outputs columns
@@ -77,6 +107,9 @@ class DataLoader:
                 self.y = self.y.iloc[:, 0]
 
         logger.info(f"Loaded targets: shape {self.y.shape}")
+
+        # Create sample weights - KEY NEW FUNCTIONALITY
+        self.sample_weights = self.create_sample_weights(len(self.X))
 
         # Load feature types
         feature_types_path = Path(self.data_config['feature_types_path'])
@@ -96,62 +129,31 @@ class DataLoader:
 
         return self.X, self.y, self.feature_types
 
-    def _validate_data(self):
-        """Validate loaded data"""
-        # Check for matching sample sizes
-        if len(self.X) != len(self.y):
-            raise ValueError(f"Feature and target sizes don't match: {len(self.X)} vs {len(self.y)}")
-
-        # Check for missing values
-        if self.X.isnull().any().any():
-            n_missing = self.X.isnull().sum().sum()
-            logger.warning(f"Found {n_missing} missing values in features")
-
-        # Handle both DataFrame and Series for targets
-        if isinstance(self.y, pd.DataFrame):
-            if self.y.isnull().any().any():
-                n_missing = self.y.isnull().sum().sum()
-                logger.warning(f"Found {n_missing} missing values in targets")
-        else:
-            if pd.isna(self.y).any():
-                n_missing = pd.isna(self.y).sum()
-                logger.warning(f"Found {n_missing} missing values in targets")
-
-        # Check feature types consistency
-        missing_types = set(self.X.columns) - set(self.feature_types.keys())
-        if missing_types:
-            logger.warning(f"Missing feature types for {len(missing_types)} features. Setting to additive.")
-            for col in missing_types:
-                self.feature_types[col] = "0"
-
-        # Validate feature type values
-        invalid_types = [k for k, v in self.feature_types.items() if v not in ["0", "1"]]
-        if invalid_types:
-            raise ValueError(f"Invalid feature types found. Expected '0' or '1', got types for: {invalid_types[:5]}")
-
-        logger.info("Data validation completed successfully")
-
     def split_data(self,
                    X: Optional[pd.DataFrame] = None,
                    y: Optional[Union[pd.Series, pd.DataFrame]] = None,
+                   sample_weights: Optional[np.ndarray] = None,
                    test_size: Optional[float] = None,
-                   stratify: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame, Union[pd.Series, pd.DataFrame], Union[pd.Series, pd.DataFrame]]:
+                   stratify: bool = False) -> Tuple[pd.DataFrame, pd.DataFrame, Union[pd.Series, pd.DataFrame], Union[pd.Series, pd.DataFrame], np.ndarray, np.ndarray]:
         """
-        Split data into train and test sets
+        Split data into train and test sets, preserving sample weights
 
         Args:
             X: Features DataFrame (uses self.X if None)
             y: Target Series/DataFrame (uses self.y if None)
+            sample_weights: Sample weights array (uses self.sample_weights if None)
             test_size: Test set size (uses config value if None)
             stratify: Whether to stratify split (for classification)
 
         Returns:
-            Tuple of (X_train, X_test, y_train, y_test)
+            Tuple of (X_train, X_test, y_train, y_test, weights_train, weights_test)
         """
         if X is None:
             X = self.X
         if y is None:
             y = self.y
+        if sample_weights is None:
+            sample_weights = self.sample_weights
         if test_size is None:
             test_size = self.data_config.get('test_size', 0.2)
 
@@ -160,8 +162,8 @@ class DataLoader:
         # No stratification for multi-output regression
         stratify_param = y if stratify and not self.is_multi_output else None
 
-        X_train, X_test, y_train, y_test = train_test_split(
-            X, y,
+        X_train, X_test, y_train, y_test, weights_train, weights_test = train_test_split(
+            X, y, sample_weights,
             test_size=test_size,
             random_state=self.random_state,
             stratify=stratify_param
@@ -169,22 +171,16 @@ class DataLoader:
 
         logger.info(f"Train set: {X_train.shape}, Test set: {X_test.shape}")
 
-        return X_train, X_test, y_train, y_test
+        logger.info(f"Weight distribution after split:")
+        logger.info(f"- Train weights: sum={np.sum(weights_train):.0f}, mean={np.mean(weights_train):.3f}")
+        logger.info(f"- Test weights: sum={np.sum(weights_test):.0f}, mean={np.mean(weights_test):.3f}")
 
-    def get_feature_groups(self) -> Dict[str, list]:
-        """
-        Get feature groups by type
+        train_high_weight = np.sum(weights_train == 2.0)
+        test_high_weight = np.sum(weights_test == 2.0)
+        logger.info(f"- Train: {train_high_weight} high-weight samples out of {len(weights_train)}")
+        logger.info(f"- Test: {test_high_weight} high-weight samples out of {len(weights_test)}")
 
-        Returns:
-            Dictionary with 'additive' and 'multiplicative' feature lists
-        """
-        additive_features = [col for col, sign in self.feature_types.items() if sign == "0"]
-        multiplicative_features = [col for col, sign in self.feature_types.items() if sign == "1"]
-
-        return {
-            'additive': additive_features,
-            'multiplicative': multiplicative_features
-        }
+        return X_train, X_test, y_train, y_test, weights_train, weights_test
 
     def get_data_summary(self) -> Dict[str, Any]:
         """
@@ -228,4 +224,68 @@ class DataLoader:
                 'n_targets': 1
             }
 
+        # Add weight information - NEW SUMMARY STATS
+        if self.sample_weights is not None:
+            summary.update({
+                'total_weight': float(np.sum(self.sample_weights)),
+                'weight_mean': float(np.mean(self.sample_weights)),
+                'weight_std': float(np.std(self.sample_weights)),
+                'n_high_weight_samples': int(np.sum(self.sample_weights == 2.0)),
+                'high_weight_percentage': float(np.sum(self.sample_weights == 2.0) / len(self.sample_weights) * 100)
+            })
+
         return summary
+
+    def get_feature_groups(self) -> Dict[str, list]:
+        """
+        Get feature groups by type
+
+        Returns:
+            Dictionary with 'additive' and 'multiplicative' feature lists
+        """
+        additive_features = [col for col, sign in self.feature_types.items() if sign == "0"]
+        multiplicative_features = [col for col, sign in self.feature_types.items() if sign == "1"]
+
+        return {
+            'additive': additive_features,
+            'multiplicative': multiplicative_features
+        }
+
+    def _validate_data(self):
+        """Validate loaded data including sample weights"""
+        # Check for matching sample sizes
+        if len(self.X) != len(self.y):
+            raise ValueError(f"Feature and target sizes don't match: {len(self.X)} vs {len(self.y)}")
+
+        # Check sample weights size - NEW VALIDATION
+        if self.sample_weights is not None and len(self.sample_weights) != len(self.X):
+            raise ValueError(f"Sample weights size doesn't match data size: {len(self.sample_weights)} vs {len(self.X)}")
+
+        # Existing validation code...
+        if self.X.isnull().any().any():
+            n_missing = self.X.isnull().sum().sum()
+            logger.warning(f"Found {n_missing} missing values in features")
+
+        # Handle both DataFrame and Series for targets
+        if isinstance(self.y, pd.DataFrame):
+            if self.y.isnull().any().any():
+                n_missing = self.y.isnull().sum().sum()
+                logger.warning(f"Found {n_missing} missing values in targets")
+        else:
+            if pd.isna(self.y).any():
+                n_missing = pd.isna(self.y).sum()
+                logger.warning(f"Found {n_missing} missing values in targets")
+
+        # Check feature types consistency
+        missing_types = set(self.X.columns) - set(self.feature_types.keys())
+        if missing_types:
+            logger.warning(f"Missing feature types for {len(missing_types)} features. Setting to additive.")
+            for col in missing_types:
+                self.feature_types[col] = "0"
+
+        # Validate feature type values
+        invalid_types = [k for k, v in self.feature_types.items() if v not in ["0", "1"]]
+        if invalid_types:
+            raise ValueError(f"Invalid feature types found. Expected '0' or '1', got types for: {invalid_types[:5]}")
+
+        logger.info("Data validation completed successfully")

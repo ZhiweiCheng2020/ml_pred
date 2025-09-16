@@ -31,13 +31,15 @@ class Evaluator:
         self.is_multi_output = self.multi_output_config.get('enabled', False)
         self.n_outputs = self.multi_output_config.get('n_outputs', 1)
 
-    def evaluate(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    def evaluate(self, y_true: np.ndarray, y_pred: np.ndarray,
+                 sample_weight: Optional[np.ndarray] = None) -> Dict[str, float]:
         """
         Calculate evaluation metrics
 
         Args:
             y_true: True values
             y_pred: Predicted values
+            sample_weight: Optional sample weights
 
         Returns:
             Dictionary of metrics
@@ -46,37 +48,53 @@ class Evaluator:
         y_true = np.array(y_true)
         y_pred = np.array(y_pred)
 
+        if sample_weight is not None:
+            sample_weight = np.array(sample_weight)
+            # Ensure weights have same length as predictions
+            if len(sample_weight) != len(y_true):
+                logger.warning(f"Sample weight length ({len(sample_weight)}) doesn't match "
+                             f"prediction length ({len(y_true)}). Ignoring weights.")
+                sample_weight = None
+
         # Check if data is multi-output
         is_multi_output_data = len(y_true.shape) > 1 and y_true.shape[1] > 1
 
         if is_multi_output_data:
-            return self._evaluate_multi_output(y_true, y_pred)
+            return self._evaluate_multi_output(y_true, y_pred, sample_weight)
         else:
-            return self._evaluate_single_output(y_true.flatten(), y_pred.flatten())
+            return self._evaluate_single_output(y_true.flatten(), y_pred.flatten(), sample_weight)
 
-    def _evaluate_single_output(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
-        """Evaluate single output (original logic)"""
+    def _evaluate_single_output(self, y_true: np.ndarray, y_pred: np.ndarray,
+                               sample_weight: Optional[np.ndarray] = None) -> Dict[str, float]:
+        """Evaluate single output with optional weights"""
         metrics = {}
 
-        # Primary metric
+        # Primary metric - NOW USES WEIGHTS
         metrics[self.primary_metric] = self._calculate_metric(
-            y_true, y_pred, self.primary_metric
+            y_true, y_pred, self.primary_metric, sample_weight
         )
 
-        # Secondary metrics
+        # Secondary metrics - NOW USE WEIGHTS
         for metric_name in self.secondary_metrics:
             metrics[metric_name] = self._calculate_metric(
-                y_true, y_pred, metric_name
+                y_true, y_pred, metric_name, sample_weight
             )
 
         # Always calculate MSE for compatibility
         if 'mse' not in metrics:
-            metrics['mse'] = mean_squared_error(y_true, y_pred)
+            metrics['mse'] = self._calculate_metric(y_true, y_pred, 'mse', sample_weight)
+
+        if sample_weight is not None:
+            unweighted_rmse = self._calculate_metric(y_true, y_pred, 'rmse', None)
+            weighted_rmse = metrics.get('rmse', metrics.get(self.primary_metric, 0))
+            logger.debug(f"Weight impact - Unweighted RMSE: {unweighted_rmse:.6f}, "
+                        f"Weighted RMSE: {weighted_rmse:.6f}")
 
         return metrics
 
-    def _evaluate_multi_output(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
-        """NEW: Evaluate multi-output"""
+    def _evaluate_multi_output(self, y_true: np.ndarray, y_pred: np.ndarray,
+                              sample_weight: Optional[np.ndarray] = None) -> Dict[str, float]:
+        """Evaluate multi-output with optional weights"""
         metrics = {}
         n_outputs = y_true.shape[1]
 
@@ -85,23 +103,29 @@ class Evaluator:
             y_true_i = y_true[:, i]
             y_pred_i = y_pred[:, i]
 
-            # Calculate metrics for this output
+            # Calculate metrics for this output - NOW WITH WEIGHTS
             for metric_name in [self.primary_metric] + self.secondary_metrics:
-                metric_value = self._calculate_metric(y_true_i, y_pred_i, metric_name)
+                metric_value = self._calculate_metric(y_true_i, y_pred_i, metric_name, sample_weight)
                 metrics[f"output_{i}_{metric_name}"] = metric_value
 
-        # Overall metrics (average across outputs)
+        # Overall metrics (average across outputs) - NOW WITH WEIGHTS
         for metric_name in [self.primary_metric] + self.secondary_metrics:
             if metric_name == 'rmse':
-                overall_mse = np.mean((y_true - y_pred) ** 2)
+                overall_mse = self._calculate_weighted_mse(y_true, y_pred, sample_weight)
                 metrics[f"overall_{metric_name}"] = np.sqrt(overall_mse)
             elif metric_name == 'mse':
-                metrics[f"overall_{metric_name}"] = np.mean((y_true - y_pred) ** 2)
+                metrics[f"overall_{metric_name}"] = self._calculate_weighted_mse(y_true, y_pred, sample_weight)
             elif metric_name == 'mae':
-                metrics[f"overall_{metric_name}"] = np.mean(np.abs(y_true - y_pred))
+                if sample_weight is not None:
+                    weighted_errors = sample_weight[:, np.newaxis] * np.abs(y_true - y_pred)
+                    metrics[f"overall_{metric_name}"] = np.sum(weighted_errors) / np.sum(sample_weight) / n_outputs
+                else:
+                    metrics[f"overall_{metric_name}"] = np.mean(np.abs(y_true - y_pred))
             elif metric_name == 'r2':
-                # Use sklearn's multioutput scoring
-                metrics[f"overall_{metric_name}"] = r2_score(y_true, y_pred, multioutput='uniform_average')
+                # Use sklearn's multioutput scoring with weights
+                metrics[f"overall_{metric_name}"] = r2_score(y_true, y_pred,
+                                                           sample_weight=sample_weight,
+                                                           multioutput='uniform_average')
             else:
                 # Average individual output metrics
                 output_metrics = [metrics[f"output_{i}_{metric_name}"] for i in range(n_outputs)]
@@ -109,36 +133,87 @@ class Evaluator:
 
         return metrics
 
+    def _calculate_weighted_mse(self, y_true: np.ndarray, y_pred: np.ndarray,
+                               sample_weight: Optional[np.ndarray] = None) -> float:
+        """Calculate weighted MSE for multi-output case"""
+        squared_errors = (y_true - y_pred) ** 2
+
+        if sample_weight is not None:
+            # Broadcast weights to match multi-output shape
+            weights = sample_weight[:, np.newaxis] if len(squared_errors.shape) > 1 else sample_weight
+            weighted_errors = weights * squared_errors
+            return np.sum(weighted_errors) / np.sum(sample_weight) / squared_errors.shape[1] if len(squared_errors.shape) > 1 else np.sum(weighted_errors) / np.sum(sample_weight)
+        else:
+            return np.mean(squared_errors)
+
     def _calculate_metric(self, y_true: np.ndarray, y_pred: np.ndarray,
-                         metric_name: str) -> float:
+                         metric_name: str, sample_weight: Optional[np.ndarray] = None) -> float:
         """
-        Calculate a specific metric
+        Calculate a specific metric with optional sample weights
 
         Args:
             y_true: True values
             y_pred: Predicted values
             metric_name: Name of the metric
+            sample_weight: Optional sample weights
 
         Returns:
             Metric value
         """
         if metric_name == 'rmse':
-            return np.sqrt(mean_squared_error(y_true, y_pred))
+            if sample_weight is not None:
+                mse = mean_squared_error(y_true, y_pred, sample_weight=sample_weight)
+            else:
+                mse = mean_squared_error(y_true, y_pred)
+            return np.sqrt(mse)
+
         elif metric_name == 'mse':
-            return mean_squared_error(y_true, y_pred)
+            return mean_squared_error(y_true, y_pred, sample_weight=sample_weight)
+
         elif metric_name == 'mae':
-            return mean_absolute_error(y_true, y_pred)
+            return mean_absolute_error(y_true, y_pred, sample_weight=sample_weight)
+
         elif metric_name == 'r2':
-            return r2_score(y_true, y_pred)
+            return r2_score(y_true, y_pred, sample_weight=sample_weight)
+
         elif metric_name == 'mape':
             # Handle zero values in y_true
             mask = y_true != 0
             if np.sum(mask) == 0:
                 return np.inf
-            return mean_absolute_percentage_error(y_true[mask], y_pred[mask])
+
+            if sample_weight is not None:
+                # Calculate weighted MAPE - CUSTOM WEIGHTED IMPLEMENTATION
+                valid_weight = sample_weight[mask]
+                valid_true = y_true[mask]
+                valid_pred = y_pred[mask]
+
+                percentage_errors = np.abs((valid_true - valid_pred) / valid_true)
+                weighted_errors = valid_weight * percentage_errors
+                return np.sum(weighted_errors) / np.sum(valid_weight) * 100
+            else:
+                return mean_absolute_percentage_error(y_true[mask], y_pred[mask]) * 100
+
+        elif metric_name == 'max_error':
+            # Max error doesn't use weights (it's just the maximum absolute error)
+            return np.max(np.abs(y_true - y_pred))
+
+        elif metric_name == 'explained_variance':
+            # Calculate weighted explained variance - CUSTOM WEIGHTED IMPLEMENTATION
+            if sample_weight is not None:
+                # Manual calculation for weighted explained variance
+                y_true_mean = np.average(y_true, weights=sample_weight)
+                residuals = y_true - y_pred
+                var_y = np.average((y_true - y_true_mean) ** 2, weights=sample_weight)
+                var_residual = np.average(residuals ** 2, weights=sample_weight)
+                return 1 - (var_residual / var_y) if var_y != 0 else 0
+            else:
+                from sklearn.metrics import explained_variance_score
+                return explained_variance_score(y_true, y_pred)
+
         else:
             logger.warning(f"Unknown metric: {metric_name}. Using RMSE.")
-            return np.sqrt(mean_squared_error(y_true, y_pred))
+            return self._calculate_metric(y_true, y_pred, 'rmse', sample_weight)
 
     def evaluate_models(self, results: Dict[str, Dict[str, Any]]) -> pd.DataFrame:
         """

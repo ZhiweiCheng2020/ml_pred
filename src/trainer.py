@@ -40,10 +40,12 @@ class Trainer:
                     y_train: np.ndarray,
                     X_val: Optional[np.ndarray] = None,
                     y_val: Optional[np.ndarray] = None,
+                    weights_train: Optional[np.ndarray] = None,
+                    weights_val: Optional[np.ndarray] = None,
                     feature_names: Optional[List[str]] = None,
                     feature_types: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
-        Train a single model
+        Train a single model with sample weight support
 
         Args:
             model_name: Name of the model to train
@@ -51,6 +53,8 @@ class Trainer:
             y_train: Training targets
             X_val: Validation features
             y_val: Validation targets
+            weights_train: Training sample weights
+            weights_val: Validation sample weights
             feature_names: List of feature names
             feature_types: Dictionary of feature types
 
@@ -60,6 +64,14 @@ class Trainer:
         logger.info(f"\n{'=' * 50}")
         logger.info(f"Training {model_name} model")
         logger.info(f"{'=' * 50}")
+
+        # Log weight information if available
+        if weights_train is not None:
+            logger.info(f"Using sample weights - Train: mean={np.mean(weights_train):.3f}, "
+                       f"high-weight samples: {np.sum(weights_train == 2.0)}/{len(weights_train)}")
+        if weights_val is not None:
+            logger.info(f"Using sample weights - Val: mean={np.mean(weights_val):.3f}, "
+                       f"high-weight samples: {np.sum(weights_val == 2.0)}/{len(weights_val)}")
 
         # Load model configuration
         model_config_path = Path(f"config/models/{model_name}.yaml")
@@ -127,14 +139,14 @@ class Trainer:
 
         # Training predictions
         train_predictions = model.predict(X_train_selected)
-        train_metrics = evaluator.evaluate(y_train, train_predictions)
+        train_metrics = evaluator.evaluate(y_train, train_predictions, weights_train)
 
         # Validation predictions
         val_metrics = {}
         val_predictions = None
         if X_val_selected is not None and y_val is not None:
             val_predictions = model.predict(X_val_selected)
-            val_metrics = evaluator.evaluate(y_val, val_predictions)
+            val_metrics = evaluator.evaluate(y_val, val_predictions, weights_val)
 
         # Get feature importance if available
         feature_importance = model.get_feature_importance(final_feature_names)
@@ -149,14 +161,22 @@ class Trainer:
             'feature_importance': feature_importance,
             'best_params': model.best_params,
             'train_predictions': train_predictions,
-            'val_predictions': val_predictions
+            'val_predictions': val_predictions,
+            'used_sample_weights': weights_train is not None  # NEW FIELD
         }
 
-        # Log results
+        # Log results with primary metric
         logger.info(f"Training completed in {training_time:.2f} seconds")
-        logger.info(f"Train RMSE: {train_metrics.get('rmse', 0):.4f}")
-        if val_metrics:
-            logger.info(f"Val RMSE: {val_metrics.get('rmse', 0):.4f}")
+        primary_metric = self.config.get('evaluation', {}).get('primary_metric', 'rmse')
+
+        if primary_metric in train_metrics:
+            logger.info(f"Train {primary_metric.upper()}: {train_metrics[primary_metric]:.4f}")
+        if val_metrics and primary_metric in val_metrics:
+            logger.info(f"Val {primary_metric.upper()}: {val_metrics[primary_metric]:.4f}")
+
+        # Log weight impact if weights were used
+        if weights_train is not None:
+            logger.info(f"Metrics calculated using sample weights (high-weight samples emphasized)")
 
         return results
 
@@ -165,16 +185,20 @@ class Trainer:
                          y_train: np.ndarray,
                          X_val: Optional[np.ndarray] = None,
                          y_val: Optional[np.ndarray] = None,
+                         weights_train: Optional[np.ndarray] = None,
+                         weights_val: Optional[np.ndarray] = None,
                          feature_names: Optional[List[str]] = None,
                          feature_types: Optional[Dict[str, str]] = None) -> Dict[str, Dict[str, Any]]:
         """
-        Train all models specified in configuration
+        Train all models specified in configuration with sample weight support
 
         Args:
             X_train: Training features
             y_train: Training targets
             X_val: Validation features
             y_val: Validation targets
+            weights_train: Training sample weights
+            weights_val: Validation sample weights
             feature_names: List of feature names
             feature_types: Dictionary of feature types
 
@@ -184,6 +208,9 @@ class Trainer:
         models_to_run = self.config.get('models_to_run', [])
 
         logger.info(f"Training {len(models_to_run)} models: {models_to_run}")
+
+        if weights_train is not None:
+            logger.info(f"Using weighted training with {np.sum(weights_train == 2.0)} high-weight samples")
 
         all_results = {}
 
@@ -195,13 +222,15 @@ class Trainer:
             try:
                 results = self.train_model(
                     model_name, X_train, y_train, X_val, y_val,
-                    feature_names, feature_types
+                    weights_train, weights_val, feature_names, feature_types  # PASS WEIGHTS
                 )
                 all_results[model_name] = results
                 self.results[model_name] = results
 
             except Exception as e:
                 logger.error(f"Error training {model_name}: {str(e)}")
+                import traceback
+                logger.error(traceback.format_exc())
                 all_results[model_name] = {'error': str(e)}
 
         # Train ensemble if specified
@@ -209,7 +238,7 @@ class Trainer:
             try:
                 ensemble_results = self.train_ensemble(
                     X_train, y_train, X_val, y_val,
-                    feature_names, feature_types
+                    weights_train, weights_val, feature_names, feature_types  # PASS WEIGHTS
                 )
                 all_results['ensemble'] = ensemble_results
                 self.results['ensemble'] = ensemble_results
@@ -225,21 +254,65 @@ class Trainer:
 
         return all_results
 
+    def get_best_model(self, metric: str = 'rmse', use_validation: bool = True) -> str:
+        """
+        Get the name of the best performing model
+
+        Args:
+            metric: Metric to use for comparison
+            use_validation: Whether to use validation or training metrics
+
+        Returns:
+            Name of the best model
+        """
+        if not self.results:
+            raise ValueError("No models trained yet")
+
+        best_model = None
+        best_score = float('inf') if metric in ['rmse', 'mae', 'mse'] else float('-inf')
+
+        for model_name, results in self.results.items():
+            if 'error' in results:
+                continue
+
+            if use_validation and results.get('val_metrics'):
+                score = results['val_metrics'].get(metric, float('inf'))
+            else:
+                score = results['train_metrics'].get(metric, float('inf'))
+
+            if metric in ['rmse', 'mae', 'mse']:
+                if score < best_score:
+                    best_score = score
+                    best_model = model_name
+            else:
+                if score > best_score:
+                    best_score = score
+                    best_model = model_name
+
+        if best_model:
+            logger.info(f"Best model: {best_model} with {metric}={best_score:.4f} (weighted)")  # NEW LOGGING
+
+        return best_model
+
     def train_ensemble(self,
                        X_train: np.ndarray,
                        y_train: np.ndarray,
                        X_val: Optional[np.ndarray] = None,
                        y_val: Optional[np.ndarray] = None,
+                       weights_train: Optional[np.ndarray] = None,
+                       weights_val: Optional[np.ndarray] = None,
                        feature_names: Optional[List[str]] = None,
                        feature_types: Optional[Dict[str, str]] = None) -> Dict[str, Any]:
         """
-        Train ensemble model using trained base models
+        Train ensemble model using trained base models with sample weight support
 
         Args:
             X_train: Training features
             y_train: Training targets
             X_val: Validation features
             y_val: Validation targets
+            weights_train: Training sample weights
+            weights_val: Validation sample weights
             feature_names: List of feature names
             feature_types: Dictionary of feature types
 
@@ -284,14 +357,14 @@ class Trainer:
 
         # Training predictions
         train_predictions = ensemble_model.predict(X_train)
-        train_metrics = evaluator.evaluate(y_train, train_predictions)
+        train_metrics = evaluator.evaluate(y_train, train_predictions, weights_train)
 
         # Validation predictions
         val_metrics = {}
         val_predictions = None
         if X_val is not None and y_val is not None:
             val_predictions = ensemble_model.predict(X_val)
-            val_metrics = evaluator.evaluate(y_val, val_predictions)
+            val_metrics = evaluator.evaluate(y_val, val_predictions, weights_val)
 
         # Store ensemble model
         self.trained_models['ensemble'] = ensemble_model
@@ -305,55 +378,20 @@ class Trainer:
             'train_metrics': train_metrics,
             'val_metrics': val_metrics,
             'train_predictions': train_predictions,
-            'val_predictions': val_predictions
+            'val_predictions': val_predictions,
+            'used_sample_weights': weights_train is not None
         }
 
         # Log results
         logger.info(f"Ensemble training completed in {training_time:.2f} seconds")
-        logger.info(f"Train RMSE: {train_metrics.get('rmse', 0):.4f}")
-        if val_metrics:
-            logger.info(f"Val RMSE: {val_metrics.get('rmse', 0):.4f}")
+        primary_metric = self.config.get('evaluation', {}).get('primary_metric', 'rmse')
+
+        if primary_metric in train_metrics:
+            logger.info(f"Train {primary_metric.upper()}: {train_metrics[primary_metric]:.4f}")
+        if val_metrics and primary_metric in val_metrics:
+            logger.info(f"Val {primary_metric.upper()}: {val_metrics[primary_metric]:.4f}")
 
         return results
-
-    def get_best_model(self, metric: str = 'rmse', use_validation: bool = True) -> str:
-        """
-        Get the name of the best performing model
-
-        Args:
-            metric: Metric to use for comparison
-            use_validation: Whether to use validation or training metrics
-
-        Returns:
-            Name of the best model
-        """
-        if not self.results:
-            raise ValueError("No models trained yet")
-
-        best_model = None
-        best_score = float('inf') if metric in ['rmse', 'mae', 'mse'] else float('-inf')
-
-        for model_name, results in self.results.items():
-            if 'error' in results:
-                continue
-
-            if use_validation and results.get('val_metrics'):
-                score = results['val_metrics'].get(metric, float('inf'))
-            else:
-                score = results['train_metrics'].get(metric, float('inf'))
-
-            if metric in ['rmse', 'mae', 'mse']:
-                if score < best_score:
-                    best_score = score
-                    best_model = model_name
-            else:
-                if score > best_score:
-                    best_score = score
-                    best_model = model_name
-
-        logger.info(f"Best model: {best_model} with {metric}={best_score:.4f}")
-
-        return best_model
 
     def save_trained_models(self, output_dir: str = "results/model_artifacts") -> None:
         """
@@ -388,4 +426,3 @@ class Trainer:
 
             except Exception as e:
                 logger.error(f"Error saving {model_name}: {str(e)}")
-

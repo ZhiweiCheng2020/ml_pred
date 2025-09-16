@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 import warnings
 import pandas as pd
+import numpy as np
 import traceback
 
 warnings.filterwarnings('ignore')
@@ -91,7 +92,7 @@ def visualize_model_results(model_name: str,
 
 def main(config_path: str = "config/config.yaml"):
     """
-    Main pipeline execution
+    Main pipeline execution with sample weight support
 
     Args:
         config_path: Path to main configuration file
@@ -134,22 +135,33 @@ def main(config_path: str = "config/config.yaml"):
         logger.info(f"  {key}: {value}")
 
     # Split data
-    X_train, X_test, y_train, y_test = data_loader.split_data(X, y)
+    logger.info("\n" + "=" * 60)
+    logger.info("SPLITTING DATA WITH SAMPLE WEIGHTS")
+    logger.info("=" * 60)
 
-    # Further split training data for validation
+    X_train, X_test, y_train, y_test, weights_train, weights_test = data_loader.split_data(X, y)
+
+    # Further split training data for validation WITH WEIGHTS
     val_size = 0.2
     val_samples = int(len(X_train) * val_size)
 
     X_val = X_train[:val_samples]
     y_val = y_train[:val_samples]
+    weights_val = weights_train[:val_samples]
+
     X_train_final = X_train[val_samples:]
     y_train_final = y_train[val_samples:]
+    weights_train_final = weights_train[val_samples:]
 
     logger.info(f"Final split - Train: {len(X_train_final)}, Val: {len(X_val)}, Test: {len(X_test)}")
 
-    # Train models
+    logger.info(f"Weight distribution after validation split:")
+    logger.info(f"  Train final: {np.sum(weights_train_final == 2.0)} high-weight / {len(weights_train_final)} total")
+    logger.info(f"  Validation: {np.sum(weights_val == 2.0)} high-weight / {len(weights_val)} total")
+    logger.info(f"  Test: {np.sum(weights_test == 2.0)} high-weight / {len(weights_test)} total")
+
     logger.info("\n" + "=" * 60)
-    logger.info("TRAINING MODELS")
+    logger.info("TRAINING MODELS WITH SAMPLE WEIGHTS")  # UPDATED MESSAGE
     logger.info("=" * 60)
 
     # Convert to numpy arrays for training
@@ -167,6 +179,7 @@ def main(config_path: str = "config/config.yaml"):
     all_results = trainer.train_all_models(
         X_train_np, y_train_np,
         X_val_np, y_val_np,
+        weights_train_final, weights_val,
         feature_names, feature_types
     )
 
@@ -227,7 +240,7 @@ def main(config_path: str = "config/config.yaml"):
 
             # Make predictions
             test_predictions = model.predict(X_test_processed)
-            test_metrics = evaluator.evaluate(y_test_np, test_predictions)
+            test_metrics = evaluator.evaluate(y_test_np, test_predictions, weights_test)
 
             test_results[model_name] = {
                 'test_metrics': test_metrics,
@@ -238,7 +251,8 @@ def main(config_path: str = "config/config.yaml"):
             all_results[model_name]['test_metrics'] = test_metrics
             all_results[model_name]['test_predictions'] = test_predictions
 
-            logger.info(f"{model_name} - Test RMSE: {test_metrics.get('rmse', 0):.4f}")
+            primary_metric = config.get('evaluation', {}).get('primary_metric', 'rmse')
+            logger.info(f"{model_name} - Weighted Test {primary_metric.upper()}: {test_metrics.get(primary_metric, 0):.4f}")  # NEW LOGGING
 
             # Save predictions
             save_predictions(
@@ -346,13 +360,14 @@ def main(config_path: str = "config/config.yaml"):
         best_model_name = None
         if successful_models:
             try:
-                best_model_name = trainer.get_best_model('rmse', use_validation=True)
-                logger.info(f"\nBest model identified: {best_model_name}")
+                primary_metric = config.get('evaluation', {}).get('primary_metric', 'rmse')
+                best_model_name = trainer.get_best_model(primary_metric, use_validation=True)
 
                 # Create a special "best_model" directory with comprehensive analysis
                 best_model_dir = Path(config.get('output', {}).get('plots_dir', 'results/plots')) / 'best_model'
                 best_model_dir.mkdir(parents=True, exist_ok=True)
 
+                original_output_dir = visualizer.output_dir
                 visualizer.output_dir = best_model_dir
 
                 if best_model_name in test_results:
@@ -394,26 +409,28 @@ def main(config_path: str = "config/config.yaml"):
         logger.error(traceback.format_exc())
 
     # Save all results
-    logger.info("\n" + "=" * 60)
-    logger.info("SAVING RESULTS")
-    logger.info("=" * 60)
-
     final_results = {
         'comparison': comparison_df if not comparison_df.empty else pd.DataFrame(),
         'model_results': all_results,
         'test_results': test_results,
-        'best_model': best_model_name,
+        'best_model': trainer.get_best_model() if successful_models else None,
         'config': config,
         'successful_models': len(successful_models),
-        'total_models_attempted': len(all_results)
+        'total_models_attempted': len(all_results),
+        'used_sample_weights': True,  # NEW FIELD
+        'weight_info': {  # NEW FIELD
+            'total_samples': len(X),
+            'high_weight_samples': int(np.sum(data_loader.sample_weights == 2.0)),
+            'weight_scheme': 'quarter_based_double_weight_for_second_quarter'
+        }
     }
 
     save_results(final_results, config.get('output', {}).get('results_dir', 'results'))
 
     logger.info("=" * 60)
     if successful_models:
-        logger.info(f"PIPELINE COMPLETED - {len(successful_models)} models trained successfully")
-        logger.info(f"Visualizations created for all {len(successful_models)} models")
+        logger.info(f"PIPELINE COMPLETED - {len(successful_models)} models trained successfully with weighted evaluation")  # NEW LOGGING
+        logger.info(f"Sample weights applied: Second quarter ({len(X)//4} samples) had 2x weight in error calculations")
     else:
         logger.info("PIPELINE COMPLETED WITH ERRORS - No models trained successfully")
     logger.info("=" * 60)
