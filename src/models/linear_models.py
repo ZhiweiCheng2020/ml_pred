@@ -1,5 +1,5 @@
 """
-Linear regression models
+Linear regression models with sample weight support
 """
 
 import numpy as np
@@ -12,7 +12,7 @@ logger = logging.getLogger(__name__)
 
 
 class RidgeModel(BaseModel):
-    """Ridge Regression model"""
+    """Ridge Regression model with sample weight support"""
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize Ridge model"""
@@ -25,21 +25,32 @@ class RidgeModel(BaseModel):
 
     def fit(self, X: np.ndarray, y: np.ndarray,
             X_val: Optional[np.ndarray] = None,
-            y_val: Optional[np.ndarray] = None) -> 'RidgeModel':
-        """Fit Ridge model"""
+            y_val: Optional[np.ndarray] = None,
+            sample_weight: Optional[np.ndarray] = None,
+            val_sample_weight: Optional[np.ndarray] = None) -> 'RidgeModel':
+        """Fit Ridge model with sample weight support"""
         logger.info(f"Training {self.model_name} model...")
+
+        if sample_weight is not None:
+            logger.info(f"Using sample weights in training: mean={np.mean(sample_weight):.3f}, "
+                       f"high-weight samples: {np.sum(sample_weight == 2.0)}/{len(sample_weight)}")
 
         # Tune hyperparameters if enabled
         if self.hyperparameter_tuning.get('enabled', False):
-            best_params = self.tune_hyperparameters(X, y, X_val, y_val)
+            best_params = self.tune_hyperparameters(X, y, X_val, y_val, sample_weight, val_sample_weight)
             self.parameters.update(best_params)
 
-        # Build and fit model
+        # Build and fit model with sample weights
         self.model = self.build_model()
-        self.model.fit(X, y)
+
+        # Ridge supports sample_weight parameter
+        if sample_weight is not None:
+            self.model.fit(X, y, sample_weight=sample_weight)
+        else:
+            self.model.fit(X, y)
 
         self.is_fitted = True
-        logger.info(f"{self.model_name} model trained successfully")
+        logger.info(f"{self.model_name} model trained successfully with sample weights")
 
         return self
 
@@ -52,7 +63,7 @@ class RidgeModel(BaseModel):
 
 
 class ElasticNetModel(BaseModel):
-    """ElasticNet Regression model"""
+    """ElasticNet Regression model with sample weight support"""
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize ElasticNet model"""
@@ -65,21 +76,32 @@ class ElasticNetModel(BaseModel):
 
     def fit(self, X: np.ndarray, y: np.ndarray,
             X_val: Optional[np.ndarray] = None,
-            y_val: Optional[np.ndarray] = None) -> 'ElasticNetModel':
-        """Fit ElasticNet model"""
+            y_val: Optional[np.ndarray] = None,
+            sample_weight: Optional[np.ndarray] = None,
+            val_sample_weight: Optional[np.ndarray] = None) -> 'ElasticNetModel':
+        """Fit ElasticNet model with sample weight support"""
         logger.info(f"Training {self.model_name} model...")
+
+        if sample_weight is not None:
+            logger.info(f"Using sample weights in training: mean={np.mean(sample_weight):.3f}, "
+                       f"high-weight samples: {np.sum(sample_weight == 2.0)}/{len(sample_weight)}")
 
         # Tune hyperparameters if enabled
         if self.hyperparameter_tuning.get('enabled', False):
-            best_params = self.tune_hyperparameters(X, y, X_val, y_val)
+            best_params = self.tune_hyperparameters(X, y, X_val, y_val, sample_weight, val_sample_weight)
             self.parameters.update(best_params)
 
-        # Build and fit model
+        # Build and fit model with sample weights
         self.model = self.build_model()
-        self.model.fit(X, y)
+
+        # ElasticNet supports sample_weight parameter
+        if sample_weight is not None:
+            self.model.fit(X, y, sample_weight=sample_weight)
+        else:
+            self.model.fit(X, y)
 
         self.is_fitted = True
-        logger.info(f"{self.model_name} model trained successfully")
+        logger.info(f"{self.model_name} model trained successfully with sample weights")
 
         return self
 

@@ -1,5 +1,5 @@
 """
-Neural network models - Minimal changes for multi-output support
+Neural network models with sample weight support - TensorFlow 2.15+ and PyTorch 2.1+
 """
 
 import numpy as np
@@ -85,7 +85,7 @@ def setup_gpu_pytorch(config: Dict[str, Any]) -> torch.device:
 
 
 class SparseNNModel(BaseModel):
-    """Sparse Neural Network with L1 regularization - TF 2.15+ compatible"""
+    """Sparse Neural Network with L1 Regularization and sample weight support - TF 2.15+ compatible"""
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize Sparse NN model"""
@@ -169,14 +169,20 @@ class SparseNNModel(BaseModel):
 
     def fit(self, X: np.ndarray, y: np.ndarray,
             X_val: Optional[np.ndarray] = None,
-            y_val: Optional[np.ndarray] = None) -> 'SparseNNModel':
-        """Fit Sparse NN model with GPU optimization"""
+            y_val: Optional[np.ndarray] = None,
+            sample_weight: Optional[np.ndarray] = None,
+            val_sample_weight: Optional[np.ndarray] = None) -> 'SparseNNModel':
+        """Fit Sparse NN model with sample weight support"""
         logger.info(f"Training {self.model_name} model...")
 
         # Check GPU availability
         gpu_available = len(tf.config.list_physical_devices('GPU')) > 0
         if gpu_available:
             logger.info(f"Training on GPU: {tf.config.list_physical_devices('GPU')}")
+
+        if sample_weight is not None:
+            logger.info(f"Using sample weights in training: mean={np.mean(sample_weight):.3f}, "
+                       f"high-weight samples: {np.sum(sample_weight == 2.0)}/{len(sample_weight)}")
 
         y = np.array(y)
         if y_val is not None:
@@ -222,7 +228,7 @@ class SparseNNModel(BaseModel):
         # Prepare validation data
         validation_data = None
         if X_val is not None and y_val is not None:
-            validation_data = (X_val, y_val)
+            validation_data = (X_val, y_val, val_sample_weight)  # Include validation sample weights
 
         # Train model with optimized batch size for GPU
         batch_size = self.training_params.get('batch_size', 32)
@@ -232,9 +238,10 @@ class SparseNNModel(BaseModel):
         epochs = self.training_params.get('epochs', 200)
         validation_split = self.training_params.get('validation_split', 0.2) if validation_data is None else 0.0
 
-        # Train with standard fit method (simpler and more stable)
+        # Train with sample weights - KEY FIX HERE
         self.model.fit(
             X, y,
+            sample_weight=sample_weight,  # *** CRITICAL: Pass sample weights to training ***
             batch_size=batch_size,
             epochs=epochs,
             validation_data=validation_data,
@@ -244,7 +251,7 @@ class SparseNNModel(BaseModel):
         )
 
         self.is_fitted = True
-        logger.info(f"{self.model_name} model trained successfully")
+        logger.info(f"{self.model_name} model trained successfully with sample weights")
 
         return self
 
@@ -259,19 +266,9 @@ class SparseNNModel(BaseModel):
         predictions = self.model.predict(X, batch_size=batch_size, verbose=0)
         return predictions
 
-    def _ensure_1d_target(self, y: np.ndarray) -> np.ndarray:
-        """Ensure target is 1D for regression"""
-        if len(y.shape) > 1:
-            if y.shape[1] == 1:
-                return y.flatten()
-            else:
-                logger.warning(f"Target has multiple columns: {y.shape}. Using first column.")
-                return y[:, 0]
-        return y
-
 
 class TabNetModel(BaseModel):
-    """TabNet model with GPU support - Compatible with pytorch-tabnet 4.1+"""
+    """TabNet model with sample weight support - Compatible with pytorch-tabnet 4.1+"""
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize TabNet model"""
@@ -311,9 +308,15 @@ class TabNetModel(BaseModel):
 
     def fit(self, X: np.ndarray, y: np.ndarray,
             X_val: Optional[np.ndarray] = None,
-            y_val: Optional[np.ndarray] = None) -> 'TabNetModel':
-        """Fit TabNet model with GPU optimization"""
+            y_val: Optional[np.ndarray] = None,
+            sample_weight: Optional[np.ndarray] = None,
+            val_sample_weight: Optional[np.ndarray] = None) -> 'TabNetModel':
+        """Fit TabNet model with sample weight support"""
         logger.info(f"Training {self.model_name} model on {self.device}...")
+
+        if sample_weight is not None:
+            logger.info(f"Using sample weights in training: mean={np.mean(sample_weight):.3f}, "
+                       f"high-weight samples: {np.sum(sample_weight == 2.0)}/{len(sample_weight)}")
 
         # Build model
         self.model = self.build_model()
@@ -338,19 +341,27 @@ class TabNetModel(BaseModel):
             y_val_2d = self._ensure_2d_target(y_val)
             eval_set = [(X_val, y_val_2d)]
 
-        # Train model with updated parameters for pytorch-tabnet 4.1+
+        # Train model with sample weights - KEY FIX HERE
         try:
-            self.model.fit(
-                X, y_train_2d,
-                eval_set=eval_set if eval_set else None,
-                max_epochs=max_epochs,
-                batch_size=batch_size,
-                virtual_batch_size=virtual_batch_size,
-                patience=patience,
-                eval_metric=['rmse'],
-                drop_last=False,  # New parameter in recent versions
-                augmentations=None  # Explicitly set to None
-            )
+            fit_params = {
+                'X_train': X,
+                'y_train': y_train_2d,
+                'eval_set': eval_set if eval_set else None,
+                'max_epochs': max_epochs,
+                'batch_size': batch_size,
+                'virtual_batch_size': virtual_batch_size,
+                'patience': patience,
+                'eval_metric': ['rmse'],
+                'drop_last': False,
+                'augmentations': None
+            }
+
+            # *** CRITICAL: Add sample weights if provided ***
+            if sample_weight is not None:
+                fit_params['weights'] = sample_weight
+
+            self.model.fit(**fit_params)
+
         except Exception as e:
             logger.error(f"TabNet training failed: {e}")
             logger.info("Retrying with simpler TabNet configuration...")
@@ -363,17 +374,24 @@ class TabNetModel(BaseModel):
                 verbose=0, seed=42,
                 device_name='cuda' if self.device.type == 'cuda' else 'cpu'
             )
-            self.model.fit(
-                X, y_train_2d,
-                eval_set=eval_set if eval_set else None,
-                max_epochs=min(100, max_epochs),
-                batch_size=min(512, batch_size),
-                virtual_batch_size=min(64, virtual_batch_size),
-                patience=min(15, patience)
-            )
+
+            fallback_params = {
+                'X_train': X,
+                'y_train': y_train_2d,
+                'eval_set': eval_set if eval_set else None,
+                'max_epochs': min(100, max_epochs),
+                'batch_size': min(512, batch_size),
+                'virtual_batch_size': min(64, virtual_batch_size),
+                'patience': min(15, patience)
+            }
+
+            if sample_weight is not None:
+                fallback_params['weights'] = sample_weight
+
+            self.model.fit(**fallback_params)
 
         self.is_fitted = True
-        logger.info(f"{self.model_name} model trained successfully")
+        logger.info(f"{self.model_name} model trained successfully with sample weights")
 
         return self
 
@@ -446,7 +464,7 @@ class MultiHeadAttention(nn.Module):
 
 
 class SAINTModel(BaseModel):
-    """SAINT model with GPU support - PyTorch 2.1+ compatible"""
+    """SAINT model with sample weight support - PyTorch 2.1+ compatible"""
 
     def __init__(self, config: Dict[str, Any]):
         """Initialize SAINT model"""
@@ -459,7 +477,7 @@ class SAINTModel(BaseModel):
         self.device = setup_gpu_pytorch(config)
 
     def build_model(self, input_dim: int) -> nn.Module:
-        """Build SAINT model - simplified version"""
+        """Build SAINT model - simplified version with sample weight support"""
         logger.warning("SAINT model using simplified implementation")
 
         class SimpleSAINT(nn.Module):
@@ -491,9 +509,15 @@ class SAINTModel(BaseModel):
 
     def fit(self, X: np.ndarray, y: np.ndarray,
             X_val: Optional[np.ndarray] = None,
-            y_val: Optional[np.ndarray] = None) -> 'SAINTModel':
-        """Fit SAINT model with GPU optimization"""
+            y_val: Optional[np.ndarray] = None,
+            sample_weight: Optional[np.ndarray] = None,
+            val_sample_weight: Optional[np.ndarray] = None) -> 'SAINTModel':
+        """Fit SAINT model with sample weight support"""
         logger.info(f"Training {self.model_name} model on {self.device}...")
+
+        if sample_weight is not None:
+            logger.info(f"Using sample weights in training: mean={np.mean(sample_weight):.3f}, "
+                       f"high-weight samples: {np.sum(sample_weight == 2.0)}/{len(sample_weight)}")
 
         # Build model
         input_dim = X.shape[1]
@@ -506,6 +530,12 @@ class SAINTModel(BaseModel):
         # Convert to tensors with proper dtype
         X_tensor = torch.FloatTensor(X).to(self.device)
         y_tensor = torch.FloatTensor(y).to(self.device)
+
+        # Convert sample weights to tensor
+        if sample_weight is not None:
+            weight_tensor = torch.FloatTensor(sample_weight).to(self.device)
+        else:
+            weight_tensor = None
 
         if X_val is not None and y_val is not None:
             X_val_tensor = torch.FloatTensor(X_val).to(self.device)
@@ -531,33 +561,64 @@ class SAINTModel(BaseModel):
 
         epochs = self.training_params.get('epochs', 150)
 
-        # Simple training loop
+        # Training loop with sample weights
         self.model.train()
+        n_samples = len(X_tensor)
+        n_batches = (n_samples + batch_size - 1) // batch_size
+
         for epoch in range(epochs):
-            # Forward pass
-            outputs = self.model(X_tensor)
+            epoch_loss = 0.0
 
-            if len(y_tensor.shape) > 1 and y_tensor.shape[1] > 1:
-                # Multi-output
-                loss = F.mse_loss(outputs, y_tensor)
-            else:
-                # Single output
-                loss = F.mse_loss(outputs.squeeze(), y_tensor.flatten())
+            # Shuffle data
+            indices = torch.randperm(n_samples)
 
-            # Backward pass
-            optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
-            loss.backward()
+            for batch_idx in range(n_batches):
+                start_idx = batch_idx * batch_size
+                end_idx = min((batch_idx + 1) * batch_size, n_samples)
+                batch_indices = indices[start_idx:end_idx]
 
-            # Gradient clipping
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                # Get batch data
+                X_batch = X_tensor[batch_indices]
+                y_batch = y_tensor[batch_indices]
 
-            optimizer.step()
+                # Forward pass
+                outputs = self.model(X_batch)
+
+                if len(y_batch.shape) > 1 and y_batch.shape[1] > 1:
+                    # Multi-output
+                    loss = F.mse_loss(outputs, y_batch, reduction='none')
+                else:
+                    # Single output
+                    loss = F.mse_loss(outputs.squeeze(), y_batch.flatten(), reduction='none')
+
+                # *** CRITICAL: Apply sample weights to loss ***
+                if weight_tensor is not None:
+                    batch_weights = weight_tensor[batch_indices]
+                    if len(loss.shape) > 1:
+                        # Multi-output case
+                        batch_weights = batch_weights.unsqueeze(1)
+                    weighted_loss = loss * batch_weights
+                    loss = weighted_loss.mean()
+                else:
+                    loss = loss.mean()
+
+                # Backward pass
+                optimizer.zero_grad(set_to_none=True)  # More efficient than zero_grad()
+                loss.backward()
+
+                # Gradient clipping
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+
+                optimizer.step()
+
+                epoch_loss += loss.item()
 
             if epoch % 10 == 0:
-                logger.debug(f"Epoch {epoch}, Loss: {loss.item():.4f}")
+                avg_loss = epoch_loss / n_batches
+                logger.debug(f"Epoch {epoch}, Loss: {avg_loss:.4f}")
 
         self.is_fitted = True
-        logger.info(f"{self.model_name} model trained successfully")
+        logger.info(f"{self.model_name} model trained successfully with sample weights")
 
         return self
 

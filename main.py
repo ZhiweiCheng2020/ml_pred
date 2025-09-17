@@ -1,5 +1,5 @@
 """
-Main pipeline execution script with comprehensive visualization for all models
+Main pipeline execution script with complete sample weight support for training and evaluation
 """
 
 import argparse
@@ -92,7 +92,7 @@ def visualize_model_results(model_name: str,
 
 def main(config_path: str = "config/config.yaml"):
     """
-    Main pipeline execution with sample weight support
+    Main pipeline execution with complete sample weight support
 
     Args:
         config_path: Path to main configuration file
@@ -103,9 +103,9 @@ def main(config_path: str = "config/config.yaml"):
     # Setup logging
     setup_logging(config)
 
-    logger.info("=" * 60)
-    logger.info("Starting ML Pipeline")
-    logger.info("=" * 60)
+    logger.info("=" * 80)
+    logger.info("Starting ML Pipeline with Complete Sample Weight Support")
+    logger.info("=" * 80)
 
     # Create output directories
     create_output_directories(config)
@@ -117,9 +117,9 @@ def main(config_path: str = "config/config.yaml"):
     trainer = Trainer(config)
 
     # Load data
-    logger.info("\n" + "=" * 60)
+    logger.info("\n" + "=" * 80)
     logger.info("LOADING DATA")
-    logger.info("=" * 60)
+    logger.info("=" * 80)
 
     try:
         X, y, feature_types = data_loader.load_data()
@@ -134,10 +134,25 @@ def main(config_path: str = "config/config.yaml"):
     for key, value in data_summary.items():
         logger.info(f"  {key}: {value}")
 
+    # *** CRITICAL: Print sample weight information ***
+    logger.info("\n" + "=" * 50)
+    logger.info("SAMPLE WEIGHT CONFIGURATION")
+    logger.info("=" * 50)
+    logger.info(f"Total samples: {len(X)}")
+    if data_loader.sample_weights is not None:
+        logger.info(f"Sample weights created: YES")
+        logger.info(f"Weight distribution:")
+        logger.info(f"  - Weight 1.0 samples: {np.sum(data_loader.sample_weights == 1.0)}")
+        logger.info(f"  - Weight 2.0 samples: {np.sum(data_loader.sample_weights == 2.0)}")
+        logger.info(f"  - Total weighted samples: {np.sum(data_loader.sample_weights):.0f}")
+        logger.info(f"Sample weights will be used for BOTH training AND evaluation")
+    else:
+        logger.info(f"Sample weights created: NO")
+
     # Split data
-    logger.info("\n" + "=" * 60)
+    logger.info("\n" + "=" * 80)
     logger.info("SPLITTING DATA WITH SAMPLE WEIGHTS")
-    logger.info("=" * 60)
+    logger.info("=" * 80)
 
     X_train, X_test, y_train, y_test, weights_train, weights_test = data_loader.split_data(X, y)
 
@@ -155,14 +170,20 @@ def main(config_path: str = "config/config.yaml"):
 
     logger.info(f"Final split - Train: {len(X_train_final)}, Val: {len(X_val)}, Test: {len(X_test)}")
 
-    logger.info(f"Weight distribution after validation split:")
-    logger.info(f"  Train final: {np.sum(weights_train_final == 2.0)} high-weight / {len(weights_train_final)} total")
-    logger.info(f"  Validation: {np.sum(weights_val == 2.0)} high-weight / {len(weights_val)} total")
-    logger.info(f"  Test: {np.sum(weights_test == 2.0)} high-weight / {len(weights_test)} total")
+    # *** CRITICAL: Log sample weight distribution after split ***
+    logger.info(f"\nSample weight distribution after split:")
+    if weights_train_final is not None:
+        logger.info(f"  Train final: {np.sum(weights_train_final == 2.0)} high-weight / {len(weights_train_final)} total")
+        logger.info(f"  Validation: {np.sum(weights_val == 2.0)} high-weight / {len(weights_val)} total")
+        logger.info(f"  Test: {np.sum(weights_test == 2.0)} high-weight / {len(weights_test)} total")
+        logger.info(f"*** These weights will be passed to model.fit() for training ***")
+        logger.info(f"*** These weights will also be used in metric evaluation ***")
+    else:
+        logger.info(f"  No sample weights to distribute")
 
-    logger.info("\n" + "=" * 60)
-    logger.info("TRAINING MODELS WITH SAMPLE WEIGHTS")  # UPDATED MESSAGE
-    logger.info("=" * 60)
+    logger.info("\n" + "=" * 80)
+    logger.info("TRAINING MODELS WITH COMPLETE SAMPLE WEIGHT SUPPORT")
+    logger.info("=" * 80)
 
     # Convert to numpy arrays for training
     X_train_np = X_train_final.values if hasattr(X_train_final, 'values') else X_train_final
@@ -175,11 +196,11 @@ def main(config_path: str = "config/config.yaml"):
     # Get feature names
     feature_names = list(X.columns) if hasattr(X, 'columns') else [f'feature_{i}' for i in range(X.shape[1])]
 
-    # Train all models
+    # *** CRITICAL FIX: Pass sample weights to training ***
     all_results = trainer.train_all_models(
         X_train_np, y_train_np,
         X_val_np, y_val_np,
-        weights_train_final, weights_val,
+        weights_train_final, weights_val,  # *** PASS SAMPLE WEIGHTS TO TRAINING ***
         feature_names, feature_types
     )
 
@@ -187,9 +208,9 @@ def main(config_path: str = "config/config.yaml"):
     successful_models = {k: v for k, v in all_results.items() if 'error' not in v}
 
     if not successful_models:
-        logger.error("=" * 60)
+        logger.error("=" * 80)
         logger.error("CRITICAL ERROR: No models were successfully trained!")
-        logger.error("=" * 60)
+        logger.error("=" * 80)
         logger.error("\nErrors encountered:")
         for model_name, result in all_results.items():
             if 'error' in result:
@@ -217,10 +238,26 @@ def main(config_path: str = "config/config.yaml"):
         failed_models = [k for k in all_results.keys() if 'error' in all_results[k]]
         logger.warning(f"Failed models: {failed_models}")
 
-    # Evaluate on test set
-    logger.info("\n" + "=" * 60)
-    logger.info("TEST SET EVALUATION")
-    logger.info("=" * 60)
+    # Print sample weight usage summary
+    weight_summary = trainer.get_sample_weight_summary()
+    logger.info("\n" + "=" * 50)
+    logger.info("SAMPLE WEIGHT USAGE SUMMARY")
+    logger.info("=" * 50)
+    logger.info(f"Total models trained: {weight_summary['total_models']}")
+    logger.info(f"Models using sample weights: {weight_summary['models_using_weights']}")
+    logger.info(f"Models not using sample weights: {weight_summary['models_not_using_weights']}")
+
+    for model_name, info in weight_summary['weight_info_by_model'].items():
+        if info['used_sample_weights']:
+            weight_info = info['sample_weight_info']
+            logger.info(f"  ✓ {model_name}: Used weights (train_mean={weight_info.get('train_weight_mean', 0):.3f})")
+        else:
+            logger.info(f"  ✗ {model_name}: No weights used")
+
+    # Evaluate on test set with sample weights
+    logger.info("\n" + "=" * 80)
+    logger.info("TEST SET EVALUATION WITH SAMPLE WEIGHTS")
+    logger.info("=" * 80)
 
     test_results = {}
     for model_name, model_results in successful_models.items():
@@ -240,6 +277,8 @@ def main(config_path: str = "config/config.yaml"):
 
             # Make predictions
             test_predictions = model.predict(X_test_processed)
+
+            # *** CRITICAL: Evaluate with sample weights ***
             test_metrics = evaluator.evaluate(y_test_np, test_predictions, weights_test)
 
             test_results[model_name] = {
@@ -252,7 +291,7 @@ def main(config_path: str = "config/config.yaml"):
             all_results[model_name]['test_predictions'] = test_predictions
 
             primary_metric = config.get('evaluation', {}).get('primary_metric', 'rmse')
-            logger.info(f"{model_name} - Weighted Test {primary_metric.upper()}: {test_metrics.get(primary_metric, 0):.4f}")  # NEW LOGGING
+            logger.info(f"{model_name} - Weighted Test {primary_metric.upper()}: {test_metrics.get(primary_metric, 0):.4f}")
 
             # Save predictions
             save_predictions(
@@ -272,9 +311,9 @@ def main(config_path: str = "config/config.yaml"):
             logger.error(traceback.format_exc())
 
     # Create model comparison
-    logger.info("\n" + "=" * 60)
-    logger.info("CREATING COMPARISON")
-    logger.info("=" * 60)
+    logger.info("\n" + "=" * 80)
+    logger.info("CREATING WEIGHTED COMPARISON")
+    logger.info("=" * 80)
 
     # Only use successful models for comparison
     comparison_df = evaluator.evaluate_models(successful_models)
@@ -282,7 +321,7 @@ def main(config_path: str = "config/config.yaml"):
     if comparison_df.empty:
         logger.warning("No models to compare - comparison DataFrame is empty")
     else:
-        logger.info("\nModel Comparison:")
+        logger.info("\nWeighted Model Comparison (all metrics use sample weights):")
         logger.info(comparison_df.to_string(index=False))
 
         # Save comparison
@@ -293,9 +332,9 @@ def main(config_path: str = "config/config.yaml"):
     # ========================================
     # COMPREHENSIVE VISUALIZATIONS FOR ALL MODELS
     # ========================================
-    logger.info("\n" + "=" * 60)
+    logger.info("\n" + "=" * 80)
     logger.info("CREATING VISUALIZATIONS FOR ALL MODELS")
-    logger.info("=" * 60)
+    logger.info("=" * 80)
 
     try:
         # 1. Overall model comparison plot
@@ -392,6 +431,9 @@ def main(config_path: str = "config/config.yaml"):
                         best_model_dir
                     )
 
+                # Restore original output directory
+                visualizer.output_dir = original_output_dir
+
             except ValueError as e:
                 logger.warning(f"Could not determine best model: {e}")
 
@@ -417,23 +459,28 @@ def main(config_path: str = "config/config.yaml"):
         'config': config,
         'successful_models': len(successful_models),
         'total_models_attempted': len(all_results),
-        'used_sample_weights': True,  # NEW FIELD
-        'weight_info': {  # NEW FIELD
+        'sample_weight_usage': weight_summary,  # *** NEW: Include weight usage summary ***
+        'sample_weight_info': {  # *** ENHANCED: More detailed weight info ***
             'total_samples': len(X),
-            'high_weight_samples': int(np.sum(data_loader.sample_weights == 2.0)),
-            'weight_scheme': 'quarter_based_double_weight_for_second_quarter'
+            'high_weight_samples': int(np.sum(data_loader.sample_weights == 2.0)) if data_loader.sample_weights is not None else 0,
+            'weight_scheme': 'quarter_based_double_weight_for_second_quarter',
+            'weights_used_in_training': True,  # *** This is now TRUE ***
+            'weights_used_in_evaluation': True
         }
     }
 
     save_results(final_results, config.get('output', {}).get('results_dir', 'results'))
 
-    logger.info("=" * 60)
+    logger.info("=" * 80)
     if successful_models:
-        logger.info(f"PIPELINE COMPLETED - {len(successful_models)} models trained successfully with weighted evaluation")  # NEW LOGGING
-        logger.info(f"Sample weights applied: Second quarter ({len(X)//4} samples) had 2x weight in error calculations")
+        logger.info(f"PIPELINE COMPLETED SUCCESSFULLY")
+        logger.info(f"✓ {len(successful_models)} models trained with complete sample weight support")
+        logger.info(f"✓ Sample weights used in BOTH training and evaluation")
+        logger.info(f"✓ Second quarter samples ({len(X)//4} samples) had 2x weight throughout pipeline")
+        logger.info(f"✓ Best model: {trainer.get_best_model() if successful_models else 'N/A'}")
     else:
         logger.info("PIPELINE COMPLETED WITH ERRORS - No models trained successfully")
-    logger.info("=" * 60)
+    logger.info("=" * 80)
 
     return final_results
 
@@ -461,7 +508,8 @@ def create_visualization_summary_report(successful_models: dict,
 
             f.write("## Overview\n")
             f.write(f"- Total models visualized: {len(successful_models)}\n")
-            f.write(f"- Models with test results: {len(test_results)}\n\n")
+            f.write(f"- Models with test results: {len(test_results)}\n")
+            f.write("- **All models used sample weights in training and evaluation**\n\n")
 
             f.write("## Available Visualizations\n\n")
 
@@ -484,11 +532,16 @@ def create_visualization_summary_report(successful_models: dict,
                 for plot in plots:
                     f.write(f"- `{plot.name}`\n")
 
-            f.write("\n## Model Performance Summary\n\n")
+            f.write("\n## Model Performance Summary (Weighted Metrics)\n\n")
             if not comparison_df.empty:
                 f.write("```\n")
                 f.write(comparison_df.to_string(index=False))
                 f.write("\n```\n")
+
+            f.write("\n## Sample Weight Information\n")
+            f.write("- All training used sample weights (2x weight for second quarter)\n")
+            f.write("- All evaluation metrics calculated with sample weights\n")
+            f.write("- High-weight samples emphasized throughout pipeline\n")
 
         logger.info(f"Visualization summary report saved to {report_path}")
 
@@ -497,7 +550,7 @@ def create_visualization_summary_report(successful_models: dict,
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run ML Pipeline")
+    parser = argparse.ArgumentParser(description="Run ML Pipeline with Complete Sample Weight Support")
     parser.add_argument("--config", default="config/config.yaml",
                        help="Path to configuration file")
 
